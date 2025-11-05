@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: theme('colors.gray.100');
+    color: theme('colors.gray.900');
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      background-color: theme('colors.gray.900');
+      color: theme('colors.gray.100');
+    }
+  }
+}
+
+@layer components {
+  .btn-primary {
+    padding: theme('spacing.2') theme('spacing.4');
+    background-color: theme('colors.blue.600');
+    color: white;
+    border-radius: theme('borderRadius.lg');
+    font-weight: theme('fontWeight.medium');
+    transition: background-color 0.2s;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-color: theme('colors.blue.700');
+  }
+
+  .btn-primary:disabled {
+    background-color: theme('colors.gray.400');
+    cursor: not-allowed;
+  }
+
+  .btn-secondary {
+    padding: theme('spacing.2') theme('spacing.4');
+    background-color: theme('colors.gray.200');
+    color: theme('colors.gray.900');
+    border-radius: theme('borderRadius.lg');
+    font-weight: theme('fontWeight.medium');
+    transition: background-color 0.2s;
+  }
+
+  .btn-secondary:hover {
+    background-color: theme('colors.gray.300');
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .btn-secondary {
+      background-color: theme('colors.gray.700');
+      color: theme('colors.gray.100');
+    }
+
+    .btn-secondary:hover {
+      background-color: theme('colors.gray.600');
+    }
+  }
+
+  .input-field {
+    padding: theme('spacing.3') theme('spacing.2');
+    border: 1px solid theme('colors.gray.300');
+    border-radius: theme('borderRadius.lg');
+    background-color: white;
+  }
+
+  .input-field:focus {
+    outline: none;
+    ring: 2px theme('colors.blue.500');
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .input-field {
+      border-color: theme('colors.gray.600');
+      background-color: theme('colors.gray.800');
+    }
+  }
+
+  .card {
+    background-color: white;
+    border-radius: theme('borderRadius.lg');
+    box-shadow: theme('boxShadow.md');
+    padding: theme('spacing.6');
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .card {
+      background-color: theme('colors.gray.800');
+    }
+  }
+}
