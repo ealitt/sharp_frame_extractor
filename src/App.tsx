@@ -42,6 +42,7 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
   const [minFrameDistance, setMinFrameDistance] = useState<number>(5);
   const [sampleRate, setSampleRate] = useState<number>(1);
+  const [useGpu, setUseGpu] = useState<boolean>(true);
   const [exporting, setExporting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -114,6 +115,7 @@ function App() {
       const result = await invoke<AnalysisResult>('analyze_video', {
         videoPath,
         sampleRate,
+        useGpu,
       });
 
       setAnalysisResult(result);
@@ -329,6 +331,21 @@ function App() {
                       {sampleRate === 1 ? ' (all frames will be analyzed)' : ` (faster analysis, may miss some sharp frames)`}
                     </p>
                   </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      id="useGpu"
+                      checked={useGpu}
+                      onChange={(e) => setUseGpu(e.target.checked)}
+                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="useGpu" className="text-sm font-medium">
+                      Use GPU Acceleration (Metal on Mac, NVIDIA CUDA on Windows/Linux)
+                    </label>
+                  </div>
+                  <p className="text-xs text-gray-600 dark:text-gray-400">
+                    {useGpu ? 'GPU acceleration enabled - faster processing' : 'Using CPU only - slower but compatible with all systems'}
+                  </p>
                 </div>
                 <button onClick={analyzeVideo} className="btn-primary w-full">
                   <Play size={20} className="inline mr-2" />
