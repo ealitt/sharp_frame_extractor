@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BarChart,
   Bar,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -820,7 +821,10 @@ function App() {
                       dataKey="index"
                       label={{ value: 'Frame Index', position: 'insideBottom', offset: -5 }}
                     />
-                    <YAxis label={{ value: 'Sharpness', angle: -90, position: 'insideLeft' }} />
+                    <YAxis
+                      label={{ value: 'Sharpness', angle: -90, position: 'insideLeft' }}
+                      domain={[0, 'auto']}
+                    />
                     <Tooltip
                       content={({ payload }) => {
                         if (payload && payload.length > 0) {
@@ -860,9 +864,16 @@ function App() {
                     )}
                     <Bar
                       dataKey="sharpness"
-                      fill="#3b82f6"
+                      minPointSize={2}
                       style={{ cursor: 'pointer' }}
-                    />
+                    >
+                      {getChartData().map((entry, index) => (
+                        <Cell
+                          key={`cell-${index}`}
+                          fill={entry.isSelected ? '#10b981' : '#3b82f6'}
+                        />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
