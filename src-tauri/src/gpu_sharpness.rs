@@ -301,25 +301,6 @@ impl GpuContext {
     }
 }
 
-/// Convenience function to calculate sharpness with GPU
-/// Creates a new GPU context for single use (less efficient)
-pub fn calculate_sharpness_gpu(img: &DynamicImage) -> Result<f64> {
-    let context = pollster::block_on(GpuContext::new())?;
-    context.calculate_sharpness(img)
-}
-
-/// Batch processing with reusable GPU context (recommended for multiple images)
-pub fn calculate_sharpness_batch_gpu(images: &[DynamicImage]) -> Result<Vec<f64>> {
-    let context = pollster::block_on(GpuContext::new())?;
-    let mut results = Vec::with_capacity(images.len());
-
-    for img in images {
-        results.push(context.calculate_sharpness(img)?);
-    }
-
-    Ok(results)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

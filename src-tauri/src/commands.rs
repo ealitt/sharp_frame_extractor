@@ -71,49 +71,40 @@ pub async fn analyze_video(
             },
         );
 
-        // Process frames in batches: batch extract, then GPU process
-        // This minimizes CPU/GPU context switching and maximizes GPU utilization
-        const BATCH_SIZE: usize = 50;
+        // Process frames with GPU acceleration
+        // Extract frames individually for reliability and progress tracking
         let mut all_frames = Vec::new();
 
-        for (_batch_idx, chunk) in frame_numbers.chunks(BATCH_SIZE).enumerate() {
-            // Batch extract frames using FFmpeg (with hardware acceleration)
-            let images = extract_frames_to_memory_batch(path, chunk)
-                .map_err(|e| format!("Batch extraction failed: {}", e))?;
+        for (idx, &frame_num) in frame_numbers.iter().enumerate() {
+            // Extract frame
+            let img = extract_frame_to_memory(path, frame_num)
+                .map_err(|e| format!("Frame extraction failed at frame {}: {}", frame_num, e))?;
 
-            // Process all frames in this batch on GPU sequentially
-            // Sequential processing on GPU is faster than parallel CPU threads competing for GPU
-            let batch_frames: Vec<FrameData> = images
-                .iter()
-                .enumerate()
-                .map(|(i, img)| {
-                    let frame_num = chunk[i];
-                    let sharpness = gpu_context
-                        .calculate_sharpness(img)
-                        .unwrap_or_else(|_| calculate_sharpness(img)); // Fallback to CPU on error
+            // Calculate sharpness on GPU
+            let sharpness = gpu_context
+                .calculate_sharpness(&img)
+                .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
 
-                    FrameData {
-                        frame_number: frame_num,
-                        timestamp: frame_num as f64 / video_info.fps,
-                        sharpness,
-                        path: None,
-                    }
-                })
-                .collect();
+            all_frames.push(FrameData {
+                frame_number: frame_num,
+                timestamp: frame_num as f64 / video_info.fps,
+                sharpness,
+                path: None,
+            });
 
-            all_frames.extend(batch_frames);
-
-            // Update progress after each batch
-            let current = all_frames.len();
-            let percentage = (current as f32 / total_frames as f32) * 100.0;
-            let _ = window.emit(
-                "analysis-progress",
-                AnalysisProgress {
-                    current_frame: current,
-                    total_frames,
-                    percentage,
-                },
-            );
+            // Update progress frequently for better UX
+            if idx % 5 == 0 || idx == frame_numbers.len() - 1 {
+                let current = all_frames.len();
+                let percentage = (current as f32 / total_frames as f32) * 100.0;
+                let _ = window.emit(
+                    "analysis-progress",
+                    AnalysisProgress {
+                        current_frame: current,
+                        total_frames,
+                        percentage,
+                    },
+                );
+            }
         }
 
         // Calculate suggested threshold and frame count
