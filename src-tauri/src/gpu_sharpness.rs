@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use image::DynamicImage;
-use wgpu::util::DeviceExt;
 
 // WGSL Compute Shader for Laplacian filtering
 const LAPLACIAN_SHADER: &str = r#"

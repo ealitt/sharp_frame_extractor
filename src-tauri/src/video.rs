@@ -94,7 +94,6 @@ fn detect_hw_accel() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
         accel_args.extend(vec!["-hwaccel".to_string(), "videotoolbox".to_string()]);
-        return accel_args;
     }
 
     // Try CUDA (NVIDIA GPUs on Linux/Windows)
@@ -177,7 +176,6 @@ pub fn extract_frames_to_memory_batch(
     video_path: &Path,
     frame_numbers: &[usize],
 ) -> Result<Vec<DynamicImage>> {
-    let info = get_video_info(video_path)?;
     let temp_dir = std::env::temp_dir();
     let batch_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -189,7 +187,7 @@ pub fn extract_frames_to_memory_batch(
     // Create a filter expression for selecting specific frames
     let select_expr = frame_numbers
         .iter()
-        .map(|&fn| format!("eq(n\\,{})", fn))
+        .map(|&frame_num| format!("eq(n\\,{})", frame_num))
         .collect::<Vec<_>>()
         .join("+");
 

@@ -5,6 +5,7 @@ use crate::video::{
     VideoInfo,
 };
 use anyhow::Result;
+use image::GenericImageView;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -75,7 +76,7 @@ pub async fn analyze_video(
         const BATCH_SIZE: usize = 50;
         let mut all_frames = Vec::new();
 
-        for (batch_idx, chunk) in frame_numbers.chunks(BATCH_SIZE).enumerate() {
+        for (_batch_idx, chunk) in frame_numbers.chunks(BATCH_SIZE).enumerate() {
             // Batch extract frames using FFmpeg (with hardware acceleration)
             let images = extract_frames_to_memory_batch(path, chunk)
                 .map_err(|e| format!("Batch extraction failed: {}", e))?;
