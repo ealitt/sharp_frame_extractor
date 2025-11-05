@@ -34,3 +34,16 @@ export interface ExportOptions {
 }
 
 export type ExportFormat = 'jpg' | 'png';
+
+export type SelectionMode = 'threshold' | 'batch' | 'bestN' | 'topPercentage' | 'manual';
+
+export interface SelectionSettings {
+  mode: SelectionMode;
+  // Batch selection
+  batchSize: number;
+  batchBuffer: number;
+  // Best N selection
+  bestN: number;
+  // Top percentage selection
+  topPercentage: number;
+}

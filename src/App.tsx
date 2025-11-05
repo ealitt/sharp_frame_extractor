@@ -21,12 +21,16 @@ import {
   Settings,
   Info,
   FileVideo,
+  X,
+  Check,
 } from 'lucide-react';
 import type {
   AnalysisResult,
   AnalysisProgress,
   ExportOptions,
   ExportFormat,
+  SelectionMode,
+  SelectionSettings,
 } from './types';
 
 import './index.css';
@@ -45,6 +49,22 @@ function App() {
   const [useGpu, setUseGpu] = useState<boolean>(true);
   const [exporting, setExporting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // Frame selection state
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>('threshold');
+  const [selectionSettings, setSelectionSettings] = useState<SelectionSettings>({
+    mode: 'threshold',
+    batchSize: 3,
+    batchBuffer: 1,
+    bestN: 50,
+    topPercentage: 10,
+  });
+  const [manuallySelectedFrames, setManuallySelectedFrames] = useState<Set<number>>(new Set());
+
+  // Frame preview modal state
+  const [previewFrame, setPreviewFrame] = useState<number | null>(null);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -71,6 +91,7 @@ function App() {
               setVideoUrl(convertFileSrc(filePath));
               setAnalysisResult(null);
               setProgress(null);
+              setManuallySelectedFrames(new Set());
             }
           }
         }
@@ -102,6 +123,7 @@ function App() {
       setVideoUrl(convertFileSrc(selected as string));
       setAnalysisResult(null);
       setProgress(null);
+      setManuallySelectedFrames(new Set());
     }
   };
 
@@ -120,12 +142,122 @@ function App() {
 
       setAnalysisResult(result);
       setThreshold(result.suggested_threshold);
+      setSelectionSettings(prev => ({ ...prev, mode: 'threshold' }));
+      setSelectionMode('threshold');
     } catch (error) {
       console.error('Analysis failed:', error);
       alert(`Analysis failed: ${error}`);
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const handleFrameClick = async (frameIndex: number) => {
+    if (!analysisResult || !videoPath) return;
+
+    const frame = analysisResult.frames[frameIndex];
+    setPreviewFrame(frameIndex);
+    setLoadingPreview(true);
+    setPreviewImageUrl(null);
+
+    try {
+      const imageData = await invoke<string>('get_frame_preview', {
+        videoPath,
+        frameNumber: frame.frame_number,
+      });
+      setPreviewImageUrl(imageData);
+    } catch (error) {
+      console.error('Failed to load frame preview:', error);
+      alert(`Failed to load preview: ${error}`);
+      setPreviewFrame(null);
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const toggleManualSelection = (frameIndex: number) => {
+    setManuallySelectedFrames(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(frameIndex)) {
+        newSet.delete(frameIndex);
+      } else {
+        newSet.add(frameIndex);
+      }
+      return newSet;
+    });
+  };
+
+  const getSelectedFrameIndices = (): number[] => {
+    if (!analysisResult) return [];
+
+    const sharpnessScores = analysisResult.frames.map(f => f.sharpness);
+
+    switch (selectionMode) {
+      case 'manual':
+        return Array.from(manuallySelectedFrames).sort((a, b) => a - b);
+
+      case 'batch': {
+        // Select best frame from each batch
+        const { batchSize, batchBuffer } = selectionSettings;
+        const selected: number[] = [];
+        let i = 0;
+
+        while (i < sharpnessScores.length) {
+          const batchEnd = Math.min(i + batchSize, sharpnessScores.length);
+          const batchScores = sharpnessScores.slice(i, batchEnd);
+          const maxIdx = batchScores.indexOf(Math.max(...batchScores));
+          selected.push(i + maxIdx);
+          i = batchEnd + batchBuffer;
+        }
+
+        return selected;
+      }
+
+      case 'bestN': {
+        // Select top N frames by sharpness
+        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
+        indexed.sort((a, b) => b.score - a.score);
+        return indexed.slice(0, selectionSettings.bestN).map(item => item.idx).sort((a, b) => a - b);
+      }
+
+      case 'topPercentage': {
+        // Select top X% of frames by sharpness
+        const count = Math.ceil(sharpnessScores.length * selectionSettings.topPercentage / 100);
+        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
+        indexed.sort((a, b) => b.score - a.score);
+        return indexed.slice(0, count).map(item => item.idx).sort((a, b) => a - b);
+      }
+
+      case 'threshold':
+      default: {
+        // Original threshold-based selection with min distance
+        const framesAboveThreshold = analysisResult.frames
+          .map((f, idx) => ({ ...f, idx }))
+          .filter((f) => f.sharpness >= threshold);
+
+        const selectedFrames: typeof framesAboveThreshold = [];
+        let lastSelected: number | null = null;
+
+        for (const frame of framesAboveThreshold) {
+          if (lastSelected === null || frame.idx - lastSelected >= minFrameDistance) {
+            selectedFrames.push(frame);
+            lastSelected = frame.idx;
+          }
+        }
+
+        // Apply max frames limit if set
+        if (maxFrames && selectedFrames.length > maxFrames) {
+          selectedFrames.sort((a, b) => b.sharpness - a.sharpness);
+          return selectedFrames.slice(0, maxFrames).map(f => f.idx).sort((a, b) => a - b);
+        }
+
+        return selectedFrames.map(f => f.idx);
+      }
+    }
+  };
+
+  const getSelectedFrameCount = (): number => {
+    return getSelectedFrameIndices().length;
   };
 
   const exportFrames = async () => {
@@ -151,17 +283,27 @@ function App() {
       const folderName = `${videoName}_frames_${timestamp}`;
       const outputDir = `${baseDir}/${folderName}`;
 
+      // Get selected frame indices
+      const selectedIndices = getSelectedFrameIndices();
+      const frameNumbers = selectedIndices.map(idx => analysisResult.frames[idx].frame_number);
+
+      // Create a custom result with only selected frames
+      const customResult = {
+        ...analysisResult,
+        frames: selectedIndices.map(idx => analysisResult.frames[idx])
+      };
+
       const options: ExportOptions = {
         format: exportFormat,
-        threshold: threshold || undefined,
-        max_frames: maxFrames,
-        min_frame_distance: minFrameDistance,
+        threshold: 0, // Not used when we pre-filter frames
+        max_frames: undefined, // Already filtered
+        min_frame_distance: 1, // Already filtered
       };
 
       const exportedPaths = await invoke<string[]>('export_frames', {
         videoPath,
         outputDir,
-        analysisResult,
+        analysisResult: customResult,
         options,
       });
 
@@ -177,39 +319,17 @@ function App() {
   const getChartData = () => {
     if (!analysisResult) return [];
 
+    const selectedIndices = getSelectedFrameIndices();
+    const selectedSet = new Set(selectedIndices);
+
     return analysisResult.frames.map((frame, idx) => ({
       index: idx,
       frame: frame.frame_number,
       sharpness: Math.round(frame.sharpness * 100) / 100,
       timestamp: frame.timestamp.toFixed(2),
+      isSelected: selectedSet.has(idx) || (selectionMode === 'manual' && manuallySelectedFrames.has(idx)),
+      isManuallySelected: manuallySelectedFrames.has(idx),
     }));
-  };
-
-  const getSelectedFrameCount = () => {
-    if (!analysisResult) return 0;
-
-    // Apply the same logic as the backend to show accurate count
-    const framesAboveThreshold = analysisResult.frames
-      .map((f, idx) => ({ ...f, idx }))
-      .filter((f) => f.sharpness >= threshold);
-
-    // Apply min frame distance filter
-    const selectedFrames: typeof framesAboveThreshold = [];
-    let lastSelected: number | null = null;
-
-    for (const frame of framesAboveThreshold) {
-      if (lastSelected === null || frame.idx - lastSelected >= minFrameDistance) {
-        selectedFrames.push(frame);
-        lastSelected = frame.idx;
-      }
-    }
-
-    // Apply max frames limit if set
-    const finalCount = maxFrames && selectedFrames.length > maxFrames
-      ? maxFrames
-      : selectedFrames.length;
-
-    return finalCount;
   };
 
   const renderVideoInfo = () => {
@@ -241,6 +361,282 @@ function App() {
           </div>
           <div>
             <span className="font-medium">Selected:</span> {getSelectedFrameCount()}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSelectionModeUI = () => {
+    return (
+      <div className="card space-y-4">
+        <h3 className="text-lg font-semibold">Frame Selection</h3>
+
+        {/* Selection Mode Tabs */}
+        <div className="flex flex-wrap gap-2">
+          {[
+            { mode: 'threshold' as SelectionMode, label: 'Threshold' },
+            { mode: 'batch' as SelectionMode, label: 'Batch Selection' },
+            { mode: 'bestN' as SelectionMode, label: 'Best N' },
+            { mode: 'topPercentage' as SelectionMode, label: 'Top Percentage' },
+            { mode: 'manual' as SelectionMode, label: 'Manual Selection' },
+          ].map(({ mode, label }) => (
+            <button
+              key={mode}
+              onClick={() => setSelectionMode(mode)}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                selectionMode === mode
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Mode-specific settings */}
+        {selectionMode === 'threshold' && (
+          <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Sharpness Threshold: {threshold.toFixed(2)}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={analysisResult ? Math.max(...analysisResult.frames.map((f) => f.sharpness)) : 100}
+                step={0.1}
+                value={threshold}
+                onChange={(e) => setThreshold(parseFloat(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Frames above this threshold will be selected
+              </p>
+            </div>
+
+            {showSettings && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Min Frame Distance: {minFrameDistance}
+                </label>
+                <input
+                  type="range"
+                  min={1}
+                  max={30}
+                  value={minFrameDistance}
+                  onChange={(e) => setMinFrameDistance(parseInt(e.target.value))}
+                  className="w-full"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Minimum frames between selected frames
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {selectionMode === 'batch' && (
+          <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Select the sharpest frame from each batch of frames
+            </p>
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Batch Size: {selectionSettings.batchSize}
+              </label>
+              <input
+                type="range"
+                min={2}
+                max={20}
+                value={selectionSettings.batchSize}
+                onChange={(e) =>
+                  setSelectionSettings({ ...selectionSettings, batchSize: parseInt(e.target.value) })
+                }
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Number of frames to consider in each batch
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Batch Buffer: {selectionSettings.batchBuffer}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={10}
+                value={selectionSettings.batchBuffer}
+                onChange={(e) =>
+                  setSelectionSettings({ ...selectionSettings, batchBuffer: parseInt(e.target.value) })
+                }
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Number of frames to skip between batches
+              </p>
+            </div>
+          </div>
+        )}
+
+        {selectionMode === 'bestN' && (
+          <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Select the N sharpest frames from the entire video
+            </p>
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Number of Frames: {selectionSettings.bestN}
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={analysisResult?.frames.length || 100}
+                value={selectionSettings.bestN}
+                onChange={(e) =>
+                  setSelectionSettings({ ...selectionSettings, bestN: parseInt(e.target.value) || 1 })
+                }
+                className="input-field w-full"
+              />
+            </div>
+          </div>
+        )}
+
+        {selectionMode === 'topPercentage' && (
+          <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Select the top X% sharpest frames
+            </p>
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Percentage: {selectionSettings.topPercentage}%
+              </label>
+              <input
+                type="range"
+                min={1}
+                max={100}
+                value={selectionSettings.topPercentage}
+                onChange={(e) =>
+                  setSelectionSettings({ ...selectionSettings, topPercentage: parseInt(e.target.value) })
+                }
+                className="w-full"
+              />
+            </div>
+          </div>
+        )}
+
+        {selectionMode === 'manual' && (
+          <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Click on frames in the chart below to manually select them. {manuallySelectedFrames.size} frames selected.
+            </p>
+            {manuallySelectedFrames.size > 0 && (
+              <button
+                onClick={() => setManuallySelectedFrames(new Set())}
+                className="mt-2 text-sm text-red-600 hover:text-red-700"
+              >
+                Clear all selections
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+          <p className="text-sm">
+            <strong>{getSelectedFrameCount()}</strong> frames will be exported with current settings
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+  const renderFramePreviewModal = () => {
+    if (previewFrame === null || !analysisResult) return null;
+
+    const frame = analysisResult.frames[previewFrame];
+
+    return (
+      <div
+        className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
+        onClick={() => setPreviewFrame(null)}
+      >
+        <div
+          className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b dark:border-gray-700">
+            <h3 className="text-lg font-semibold">
+              Frame {frame.frame_number} Preview
+            </h3>
+            <button
+              onClick={() => setPreviewFrame(null)}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Image */}
+          <div className="p-4">
+            {loadingPreview ? (
+              <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              </div>
+            ) : previewImageUrl ? (
+              <img
+                src={previewImageUrl}
+                alt={`Frame ${frame.frame_number}`}
+                className="w-full rounded-lg"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-64 text-gray-500">
+                Failed to load image
+              </div>
+            )}
+          </div>
+
+          {/* Frame Info */}
+          <div className="p-4 border-t dark:border-gray-700 space-y-2">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span className="font-medium">Frame Number:</span> {frame.frame_number}
+              </div>
+              <div>
+                <span className="font-medium">Timestamp:</span> {frame.timestamp.toFixed(2)}s
+              </div>
+              <div>
+                <span className="font-medium">Sharpness:</span> {frame.sharpness.toFixed(2)}
+              </div>
+              <div>
+                <span className="font-medium">Frame Name:</span> frame_{String(frame.frame_number).padStart(6, '0')}
+              </div>
+            </div>
+
+            {/* Manual Selection Toggle */}
+            {selectionMode === 'manual' && (
+              <div className="pt-4 border-t dark:border-gray-700">
+                <button
+                  onClick={() => toggleManualSelection(previewFrame)}
+                  className={`w-full py-3 rounded-lg font-medium flex items-center justify-center gap-2 ${
+                    manuallySelectedFrames.has(previewFrame)
+                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                >
+                  {manuallySelectedFrames.has(previewFrame) ? (
+                    <>
+                      <Check size={20} />
+                      Selected for Export
+                    </>
+                  ) : (
+                    <>Add to Export</>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -292,6 +688,7 @@ function App() {
                   setVideoPath(null);
                   setVideoUrl(null);
                   setAnalysisResult(null);
+                  setManuallySelectedFrames(new Set());
                 }}
                 className="btn-secondary text-sm"
               >
@@ -383,8 +780,7 @@ function App() {
                 </div>
                 <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
                   <p className="text-xs text-gray-600 dark:text-gray-400">
-                    <strong>Note:</strong> Using hardware acceleration (
-                    {navigator.platform.includes('Mac') ? 'VideoToolbox' : 'GPU'}) for faster processing
+                    <strong>Note:</strong> Processing frames in batches with GPU acceleration for maximum performance
                   </p>
                 </div>
               </div>
@@ -409,9 +805,16 @@ function App() {
             {/* Sharpness Chart */}
             <div className="card space-y-4">
               <h3 className="text-lg font-semibold">Frame Sharpness Analysis</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Click on any bar to preview the frame
+              </p>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={getChartData()}>
+                  <BarChart data={getChartData()} onClick={(data) => {
+                    if (data && data.activePayload && data.activePayload[0]) {
+                      handleFrameClick(data.activePayload[0].payload.index);
+                    }
+                  }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="index"
@@ -433,23 +836,40 @@ function App() {
                               <p className="text-sm">
                                 <strong>Sharpness:</strong> {data.sharpness}
                               </p>
+                              {data.isSelected && (
+                                <p className="text-sm text-green-600 font-medium">
+                                  ✓ Selected for export
+                                </p>
+                              )}
+                              <p className="text-xs text-gray-500 mt-1">
+                                Click to preview
+                              </p>
                             </div>
                           );
                         }
                         return null;
                       }}
                     />
-                    <ReferenceLine
-                      y={threshold}
-                      stroke="red"
-                      strokeDasharray="3 3"
-                      label={{ value: 'Threshold', position: 'right' }}
+                    {selectionMode === 'threshold' && (
+                      <ReferenceLine
+                        y={threshold}
+                        stroke="red"
+                        strokeDasharray="3 3"
+                        label={{ value: 'Threshold', position: 'right' }}
+                      />
+                    )}
+                    <Bar
+                      dataKey="sharpness"
+                      fill="#3b82f6"
+                      style={{ cursor: 'pointer' }}
                     />
-                    <Bar dataKey="sharpness" fill="#3b82f6" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
+
+            {/* Frame Selection UI */}
+            {renderSelectionModeUI()}
 
             {/* Export Controls */}
             <div className="card space-y-4">
@@ -463,88 +883,25 @@ function App() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Sharpness Threshold: {threshold.toFixed(2)}
-                  </label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(...analysisResult.frames.map((f) => f.sharpness))}
-                    step={0.1}
-                    value={threshold}
-                    onChange={(e) => setThreshold(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Frames above this threshold will be exported
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">Export Format</label>
-                  <select
-                    value={exportFormat}
-                    onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
-                    className="input-field w-full"
-                  >
-                    <option value="jpg">JPEG (smaller file size)</option>
-                    <option value="png">PNG (lossless)</option>
-                  </select>
-                </div>
-
-                {showSettings && (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">
-                        Max Frames (optional)
-                      </label>
-                      <input
-                        type="number"
-                        value={maxFrames || ''}
-                        onChange={(e) =>
-                          setMaxFrames(e.target.value ? parseInt(e.target.value) : undefined)
-                        }
-                        placeholder="No limit"
-                        className="input-field w-full"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium mb-2">
-                        Min Frame Distance: {minFrameDistance}
-                      </label>
-                      <input
-                        type="range"
-                        min={1}
-                        max={30}
-                        value={minFrameDistance}
-                        onChange={(e) => setMinFrameDistance(parseInt(e.target.value))}
-                        className="w-full"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Minimum frames between selected frames (prevents too many similar frames)
-                      </p>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
-                <p className="text-sm">
-                  <strong>{getSelectedFrameCount()}</strong> frames will be exported with current
-                  settings
-                </p>
+              <div>
+                <label className="block text-sm font-medium mb-2">Export Format</label>
+                <select
+                  value={exportFormat}
+                  onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+                  className="input-field w-full"
+                >
+                  <option value="jpg">JPEG (smaller file size)</option>
+                  <option value="png">PNG (lossless)</option>
+                </select>
               </div>
 
               <button
                 onClick={exportFrames}
-                disabled={exporting}
+                disabled={exporting || getSelectedFrameCount() === 0}
                 className="btn-primary w-full"
               >
                 <Download size={20} className="inline mr-2" />
-                {exporting ? 'Exporting...' : 'Export Selected Frames'}
+                {exporting ? 'Exporting...' : `Export ${getSelectedFrameCount()} Selected Frames`}
               </button>
             </div>
           </>
@@ -557,6 +914,9 @@ function App() {
           </p>
         </div>
       </div>
+
+      {/* Frame Preview Modal */}
+      {renderFramePreviewModal()}
     </div>
   );
 }

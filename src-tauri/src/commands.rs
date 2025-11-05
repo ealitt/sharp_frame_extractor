@@ -1,7 +1,7 @@
 use crate::sharpness::{calculate_auto_threshold, calculate_sharpness, select_frames_smart};
 use crate::gpu_sharpness::GpuContext;
 use crate::video::{
-    extract_frame_to_memory, extract_frames_batch, get_video_info, sample_frames, FrameData,
+    extract_frame_to_memory, extract_frames_batch, extract_frames_to_memory_batch, get_video_info, sample_frames, FrameData,
     VideoInfo,
 };
 use anyhow::Result;
@@ -60,53 +60,63 @@ pub async fn analyze_video(
             .await
             .map_err(|e| format!("Failed to initialize GPU: {}. Falling back to CPU.", e))?;
 
-        let frames: Vec<FrameData> = frame_numbers
-            .par_iter()
-            .enumerate()
-            .map(|(_idx, &frame_num)| {
-                // Extract frame and calculate sharpness using GPU
-                let result = extract_frame_to_memory(path, frame_num)
-                    .and_then(|img| {
-                        let sharpness = gpu_context
-                            .calculate_sharpness(&img)
-                            .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
-                        Ok(FrameData {
-                            frame_number: frame_num,
-                            timestamp: frame_num as f64 / video_info.fps,
-                            sharpness,
-                            path: None,
-                        })
-                    })
-                    .unwrap_or_else(|_| FrameData {
+        // Emit initial progress
+        let _ = window.emit(
+            "analysis-progress",
+            AnalysisProgress {
+                current_frame: 0,
+                total_frames,
+                percentage: 0.0,
+            },
+        );
+
+        // Process frames in batches: batch extract, then GPU process
+        // This minimizes CPU/GPU context switching and maximizes GPU utilization
+        const BATCH_SIZE: usize = 50;
+        let mut all_frames = Vec::new();
+
+        for (batch_idx, chunk) in frame_numbers.chunks(BATCH_SIZE).enumerate() {
+            // Batch extract frames using FFmpeg (with hardware acceleration)
+            let images = extract_frames_to_memory_batch(path, chunk)
+                .map_err(|e| format!("Batch extraction failed: {}", e))?;
+
+            // Process all frames in this batch on GPU sequentially
+            // Sequential processing on GPU is faster than parallel CPU threads competing for GPU
+            let batch_frames: Vec<FrameData> = images
+                .iter()
+                .enumerate()
+                .map(|(i, img)| {
+                    let frame_num = chunk[i];
+                    let sharpness = gpu_context
+                        .calculate_sharpness(img)
+                        .unwrap_or_else(|_| calculate_sharpness(img)); // Fallback to CPU on error
+
+                    FrameData {
                         frame_number: frame_num,
                         timestamp: frame_num as f64 / video_info.fps,
-                        sharpness: 0.0,
+                        sharpness,
                         path: None,
-                    });
+                    }
+                })
+                .collect();
 
-                // Update progress
-                {
-                    let mut p = progress.lock().unwrap();
-                    *p += 1;
-                    let percentage = (*p as f32 / total_frames as f32) * 100.0;
+            all_frames.extend(batch_frames);
 
-                    // Emit progress event
-                    let _ = window.emit(
-                        "analysis-progress",
-                        AnalysisProgress {
-                            current_frame: *p,
-                            total_frames,
-                            percentage,
-                        },
-                    );
-                }
-
-                result
-            })
-            .collect();
+            // Update progress after each batch
+            let current = all_frames.len();
+            let percentage = (current as f32 / total_frames as f32) * 100.0;
+            let _ = window.emit(
+                "analysis-progress",
+                AnalysisProgress {
+                    current_frame: current,
+                    total_frames,
+                    percentage,
+                },
+            );
+        }
 
         // Calculate suggested threshold and frame count
-        let sharpness_scores: Vec<f64> = frames.iter().map(|f| f.sharpness).collect();
+        let sharpness_scores: Vec<f64> = all_frames.iter().map(|f| f.sharpness).collect();
         let suggested_threshold = calculate_auto_threshold(&sharpness_scores, None);
 
         let suggested_frame_count = sharpness_scores
@@ -116,7 +126,7 @@ pub async fn analyze_video(
 
         return Ok(AnalysisResult {
             video_info,
-            frames,
+            frames: all_frames,
             suggested_threshold,
             suggested_frame_count,
         });
@@ -258,6 +268,43 @@ pub fn calculate_threshold_for_count(
     target_count: usize,
 ) -> Result<f64, String> {
     Ok(calculate_auto_threshold(&sharpness_scores, Some(target_count)))
+}
+
+/// Gets a frame image as base64 for preview
+#[tauri::command]
+pub async fn get_frame_preview(
+    video_path: String,
+    frame_number: usize,
+) -> Result<String, String> {
+    use image::ImageFormat;
+    use std::io::Cursor;
+    use base64::{engine::general_purpose, Engine as _};
+
+    let path = Path::new(&video_path);
+
+    // Extract frame to memory
+    let img = extract_frame_to_memory(path, frame_number)
+        .map_err(|e| e.to_string())?;
+
+    // Resize for preview (max 800px width to reduce data size)
+    let (width, height) = img.dimensions();
+    let preview_img = if width > 800 {
+        let scale = 800.0 / width as f32;
+        let new_width = 800;
+        let new_height = (height as f32 * scale) as u32;
+        img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    // Convert to JPEG and encode as base64
+    let mut bytes: Vec<u8> = Vec::new();
+    preview_img
+        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())?;
+
+    let base64_str = general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/jpeg;base64,{}", base64_str))
 }
 
 #[cfg(test)]

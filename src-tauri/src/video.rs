@@ -172,6 +172,77 @@ pub fn extract_frame_to_memory(video_path: &Path, frame_number: usize) -> Result
     Ok(img)
 }
 
+/// Extracts multiple frames in a single FFmpeg call for better performance
+pub fn extract_frames_to_memory_batch(
+    video_path: &Path,
+    frame_numbers: &[usize],
+) -> Result<Vec<DynamicImage>> {
+    let info = get_video_info(video_path)?;
+    let temp_dir = std::env::temp_dir();
+    let batch_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let temp_output_dir = temp_dir.join(format!("frame_batch_{}", batch_id));
+    fs::create_dir_all(&temp_output_dir)?;
+
+    // Create a filter expression for selecting specific frames
+    let select_expr = frame_numbers
+        .iter()
+        .map(|&fn| format!("eq(n\\,{})", fn))
+        .collect::<Vec<_>>()
+        .join("+");
+
+    // Build command with hardware acceleration
+    let mut cmd = Command::new("ffmpeg");
+    let hw_accel = detect_hw_accel();
+
+    // Add hardware acceleration args
+    for arg in &hw_accel {
+        cmd.arg(arg);
+    }
+
+    // Extract all frames in one go using select filter
+    cmd.args([
+        "-i", video_path.to_str().unwrap(),
+        "-vf", &format!("select='{}'", select_expr),
+        "-vsync", "0",
+        "-q:v", "2",
+        "-f", "image2",
+        &format!("{}/frame_%06d.jpg", temp_output_dir.display()),
+    ]);
+
+    let output = cmd.output()
+        .context("Failed to execute ffmpeg batch extraction")?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ffmpeg batch extraction failed: {}", error);
+    }
+
+    // Load all extracted frames
+    let mut images = Vec::new();
+    let entries = fs::read_dir(&temp_output_dir)?;
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|ext| ext == "jpg").unwrap_or(false))
+        .collect();
+
+    paths.sort(); // Ensure correct order
+
+    for path in &paths {
+        let img = image::open(path)
+            .context("Failed to load extracted frame")?;
+        images.push(img);
+    }
+
+    // Clean up temp directory
+    let _ = fs::remove_dir_all(&temp_output_dir);
+
+    Ok(images)
+}
+
 /// Extracts multiple frames efficiently using a single ffmpeg command
 pub fn extract_frames_batch(
     video_path: &Path,
