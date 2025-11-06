@@ -131,8 +131,9 @@ pub fn extract_frame(video_path: &Path, frame_number: usize, output_path: &Path)
         cmd.arg(arg);
     }
 
-    // Add remaining args
+    // Add remaining args with threading support
     cmd.args([
+        "-threads", "1", // One thread per FFmpeg instance (we parallelize at process level)
         "-ss", &timestamp.to_string(),
         "-i", video_path.to_str().unwrap(),
         "-vframes", "1",

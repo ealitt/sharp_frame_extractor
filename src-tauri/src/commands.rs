@@ -57,9 +57,11 @@ pub async fn analyze_video(
     // GPU-accelerated analysis path
     if use_gpu {
         // Initialize GPU context once
-        let gpu_context = GpuContext::new()
-            .await
-            .map_err(|e| format!("Failed to initialize GPU: {}. Falling back to CPU.", e))?;
+        let gpu_context = Arc::new(
+            GpuContext::new()
+                .await
+                .map_err(|e| format!("Failed to initialize GPU: {}. Falling back to CPU.", e))?
+        );
 
         // Emit initial progress
         let _ = window.emit(
@@ -71,44 +73,48 @@ pub async fn analyze_video(
             },
         );
 
-        // Process frames with GPU acceleration
-        // Extract frames individually for reliability and progress tracking
-        let mut all_frames = Vec::new();
+        // Process frames in parallel on GPU with Arc-wrapped context
+        // This allows multiple threads to use the same GPU context safely
+        let frames: Vec<FrameData> = frame_numbers
+            .par_iter()
+            .enumerate()
+            .map(|(idx, &frame_num)| {
+                // Extract frame
+                let img = extract_frame_to_memory(path, frame_num)
+                    .map_err(|e| format!("Frame extraction failed at frame {}: {}", frame_num, e))
+                    .ok()?;
 
-        for (idx, &frame_num) in frame_numbers.iter().enumerate() {
-            // Extract frame
-            let img = extract_frame_to_memory(path, frame_num)
-                .map_err(|e| format!("Frame extraction failed at frame {}: {}", frame_num, e))?;
+                // Calculate sharpness on GPU (thread-safe via Arc)
+                let sharpness = gpu_context
+                    .calculate_sharpness(&img)
+                    .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
 
-            // Calculate sharpness on GPU
-            let sharpness = gpu_context
-                .calculate_sharpness(&img)
-                .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
+                // Update progress periodically
+                if idx % 10 == 0 || idx == frame_numbers.len() - 1 {
+                    let current = idx + 1;
+                    let percentage = (current as f32 / total_frames as f32) * 100.0;
+                    let _ = window.emit(
+                        "analysis-progress",
+                        AnalysisProgress {
+                            current_frame: current,
+                            total_frames,
+                            percentage,
+                        },
+                    );
+                }
 
-            all_frames.push(FrameData {
-                frame_number: frame_num,
-                timestamp: frame_num as f64 / video_info.fps,
-                sharpness,
-                path: None,
-            });
-
-            // Update progress frequently for better UX
-            if idx % 5 == 0 || idx == frame_numbers.len() - 1 {
-                let current = all_frames.len();
-                let percentage = (current as f32 / total_frames as f32) * 100.0;
-                let _ = window.emit(
-                    "analysis-progress",
-                    AnalysisProgress {
-                        current_frame: current,
-                        total_frames,
-                        percentage,
-                    },
-                );
-            }
-        }
+                Some(FrameData {
+                    frame_number: frame_num,
+                    timestamp: frame_num as f64 / video_info.fps,
+                    sharpness,
+                    path: None,
+                })
+            })
+            .flatten()
+            .collect();
 
         // Calculate suggested threshold and frame count
-        let sharpness_scores: Vec<f64> = all_frames.iter().map(|f| f.sharpness).collect();
+        let sharpness_scores: Vec<f64> = frames.iter().map(|f| f.sharpness).collect();
         let suggested_threshold = calculate_auto_threshold(&sharpness_scores, None);
 
         let suggested_frame_count = sharpness_scores
@@ -118,7 +124,7 @@ pub async fn analyze_video(
 
         return Ok(AnalysisResult {
             video_info,
-            frames: all_frames,
+            frames,
             suggested_threshold,
             suggested_frame_count,
         });

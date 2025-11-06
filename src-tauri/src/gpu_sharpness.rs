@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use image::DynamicImage;
+use std::sync::Mutex;
 
 // WGSL Compute Shader for Laplacian filtering
 const LAPLACIAN_SHADER: &str = r#"
@@ -49,19 +50,26 @@ fn laplacian_compute(
 "#;
 
 // GPU context that can be reused across multiple calculations
+// Safe to share across threads with internal synchronization
 pub struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    // Mutex to ensure thread-safe GPU command submission
+    gpu_lock: Mutex<()>,
 }
 
 impl GpuContext {
     /// Initialize GPU context once and reuse it
     pub async fn new() -> Result<Self> {
-        // Create wgpu instance
+        // Create wgpu instance with Metal backend priority on macOS
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: if cfg!(target_os = "macos") {
+                wgpu::Backends::METAL // Force Metal on macOS for best performance
+            } else {
+                wgpu::Backends::all()
+            },
             ..Default::default()
         });
 
@@ -144,11 +152,16 @@ impl GpuContext {
             queue,
             pipeline,
             bind_group_layout,
+            gpu_lock: Mutex::new(()),
         })
     }
 
-    /// Calculate sharpness of an image using GPU
+    /// Calculate sharpness of an image using GPU (thread-safe)
     pub fn calculate_sharpness(&self, img: &DynamicImage) -> Result<f64> {
+        // Acquire lock to ensure thread-safe GPU operations
+        let _lock = self.gpu_lock.lock().unwrap();
+
+
         // Convert to grayscale
         let gray_img = img.to_luma8();
         let (width, height) = gray_img.dimensions();
