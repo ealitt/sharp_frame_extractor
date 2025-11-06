@@ -24,6 +24,8 @@ import {
   FileVideo,
   X,
   Check,
+  RotateCcw,
+  Clock,
 } from 'lucide-react';
 import type {
   AnalysisResult,
@@ -66,6 +68,11 @@ function App() {
   const [previewFrame, setPreviewFrame] = useState<number | null>(null);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+
+  // Time range state
+  const [startTime, setStartTime] = useState<number>(0);
+  const [endTime, setEndTime] = useState<number>(0);
+  const [showTimeRangeModal, setShowTimeRangeModal] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -145,12 +152,43 @@ function App() {
       setThreshold(result.suggested_threshold);
       setSelectionSettings(prev => ({ ...prev, mode: 'threshold' }));
       setSelectionMode('threshold');
+
+      // Initialize time range to full video
+      setStartTime(0);
+      setEndTime(result.video_info.duration);
     } catch (error) {
       console.error('Analysis failed:', error);
       alert(`Analysis failed: ${error}`);
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const handleReset = () => {
+    setVideoPath(null);
+    setVideoUrl(null);
+    setAnalysisResult(null);
+    setProgress(null);
+    setThreshold(0);
+    setMaxFrames(undefined);
+    setMinFrameDistance(5);
+    setSampleRate(1);
+    setExporting(false);
+    setShowSettings(false);
+    setSelectionMode('threshold');
+    setSelectionSettings({
+      mode: 'threshold',
+      batchSize: 3,
+      batchBuffer: 1,
+      bestN: 50,
+      topPercentage: 10,
+    });
+    setManuallySelectedFrames(new Set());
+    setPreviewFrame(null);
+    setPreviewImageUrl(null);
+    setStartTime(0);
+    setEndTime(0);
+    setShowTimeRangeModal(false);
   };
 
   const handleFrameClick = async (frameIndex: number) => {
@@ -191,68 +229,82 @@ function App() {
   const getSelectedFrameIndices = (): number[] => {
     if (!analysisResult) return [];
 
-    const sharpnessScores = analysisResult.frames.map(f => f.sharpness);
+    // Filter frames by time range first
+    const framesInRange = analysisResult.frames
+      .map((f, idx) => ({ ...f, idx }))
+      .filter(f => f.timestamp >= startTime && f.timestamp <= endTime);
+
+    const sharpnessScores = framesInRange.map(f => f.sharpness);
 
     switch (selectionMode) {
       case 'manual':
-        return Array.from(manuallySelectedFrames).sort((a, b) => a - b);
+        // Filter manual selections to only include frames in time range
+        return Array.from(manuallySelectedFrames)
+          .filter(idx => {
+            const frame = analysisResult.frames[idx];
+            return frame && frame.timestamp >= startTime && frame.timestamp <= endTime;
+          })
+          .sort((a, b) => a - b);
 
       case 'batch': {
-        // Select best frame from each batch
+        // Select best frame from each batch (within time range)
         const { batchSize, batchBuffer } = selectionSettings;
         const selected: number[] = [];
         let i = 0;
 
-        while (i < sharpnessScores.length) {
-          const batchEnd = Math.min(i + batchSize, sharpnessScores.length);
+        while (i < framesInRange.length) {
+          const batchEnd = Math.min(i + batchSize, framesInRange.length);
           const batchScores = sharpnessScores.slice(i, batchEnd);
           const maxIdx = batchScores.indexOf(Math.max(...batchScores));
-          selected.push(i + maxIdx);
+          selected.push(framesInRange[i + maxIdx].idx);
           i = batchEnd + batchBuffer;
         }
 
-        return selected;
+        return selected.sort((a, b) => a - b);
       }
 
       case 'bestN': {
-        // Select top N frames by sharpness
-        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
+        // Select top N frames by sharpness (within time range)
+        const indexed = framesInRange.map(f => ({ score: f.sharpness, idx: f.idx }));
         indexed.sort((a, b) => b.score - a.score);
         return indexed.slice(0, selectionSettings.bestN).map(item => item.idx).sort((a, b) => a - b);
       }
 
       case 'topPercentage': {
-        // Select top X% of frames by sharpness
-        const count = Math.ceil(sharpnessScores.length * selectionSettings.topPercentage / 100);
-        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
+        // Select top X% of frames by sharpness (within time range)
+        const count = Math.ceil(framesInRange.length * selectionSettings.topPercentage / 100);
+        const indexed = framesInRange.map(f => ({ score: f.sharpness, idx: f.idx }));
         indexed.sort((a, b) => b.score - a.score);
         return indexed.slice(0, count).map(item => item.idx).sort((a, b) => a - b);
       }
 
       case 'threshold':
       default: {
-        // Original threshold-based selection with min distance
-        const framesAboveThreshold = analysisResult.frames
-          .map((f, idx) => ({ ...f, idx }))
-          .filter((f) => f.sharpness >= threshold);
+        // Threshold-based selection (within time range)
+        let framesAboveThreshold = framesInRange.filter((f) => f.sharpness >= threshold);
 
-        const selectedFrames: typeof framesAboveThreshold = [];
-        let lastSelected: number | null = null;
+        // Only apply min distance if it's greater than 1
+        // This fixes the bug where threshold=0 with minFrameDistance=5 only selects every 5th frame
+        if (minFrameDistance > 1) {
+          const selectedFrames: typeof framesAboveThreshold = [];
+          let lastSelected: number | null = null;
 
-        for (const frame of framesAboveThreshold) {
-          if (lastSelected === null || frame.idx - lastSelected >= minFrameDistance) {
-            selectedFrames.push(frame);
-            lastSelected = frame.idx;
+          for (const frame of framesAboveThreshold) {
+            if (lastSelected === null || frame.idx - lastSelected >= minFrameDistance) {
+              selectedFrames.push(frame);
+              lastSelected = frame.idx;
+            }
           }
+          framesAboveThreshold = selectedFrames;
         }
 
         // Apply max frames limit if set
-        if (maxFrames && selectedFrames.length > maxFrames) {
-          selectedFrames.sort((a, b) => b.sharpness - a.sharpness);
-          return selectedFrames.slice(0, maxFrames).map(f => f.idx).sort((a, b) => a - b);
+        if (maxFrames && framesAboveThreshold.length > maxFrames) {
+          framesAboveThreshold.sort((a, b) => b.sharpness - a.sharpness);
+          return framesAboveThreshold.slice(0, maxFrames).map(f => f.idx).sort((a, b) => a - b);
         }
 
-        return selectedFrames.map(f => f.idx);
+        return framesAboveThreshold.map(f => f.idx).sort((a, b) => a - b);
       }
     }
   };
@@ -649,10 +701,22 @@ function App() {
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold flex items-center justify-center gap-3">
-            <FileVideo size={40} />
-            Sharp Frame Extractor
-          </h1>
+          <div className="flex items-center justify-center gap-4">
+            <h1 className="text-4xl font-bold flex items-center gap-3">
+              <FileVideo size={40} />
+              Sharp Frame Extractor
+            </h1>
+            {(videoPath || analysisResult) && (
+              <button
+                onClick={handleReset}
+                className="btn-secondary flex items-center gap-2"
+                title="Reset everything"
+              >
+                <RotateCcw size={20} />
+                Reset
+              </button>
+            )}
+          </div>
           <p className="text-gray-600 dark:text-gray-400">
             Extract the sharpest frames from videos for 3D Gaussian Splatting and COLMAP
           </p>
@@ -811,11 +875,7 @@ function App() {
               </p>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={getChartData()} onClick={(data) => {
-                    if (data && data.activePayload && data.activePayload[0]) {
-                      handleFrameClick(data.activePayload[0].payload.index);
-                    }
-                  }}>
+                  <BarChart data={getChartData()}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="index"
@@ -841,7 +901,7 @@ function App() {
                                 <strong>Sharpness:</strong> {data.sharpness}
                               </p>
                               {data.isSelected && (
-                                <p className="text-sm text-green-600 font-medium">
+                                <p className="text-sm text-amber-600 font-medium">
                                   ✓ Selected for export
                                 </p>
                               )}
@@ -865,17 +925,44 @@ function App() {
                     <Bar
                       dataKey="sharpness"
                       minPointSize={2}
-                      style={{ cursor: 'pointer' }}
+                      onClick={(data: any) => {
+                        if (data && data.index !== undefined) {
+                          handleFrameClick(data.index);
+                        }
+                      }}
                     >
                       {getChartData().map((entry, index) => (
                         <Cell
                           key={`cell-${index}`}
-                          fill={entry.isSelected ? '#10b981' : '#3b82f6'}
+                          fill={entry.isSelected ? '#f59e0b' : '#3b82f6'}
+                          style={{ cursor: 'pointer' }}
                         />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Time Range Selector */}
+            <div className="card">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold flex items-center gap-2">
+                    <Clock size={20} />
+                    Time Range
+                  </h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    {startTime.toFixed(2)}s - {endTime.toFixed(2)}s (Duration: {(endTime - startTime).toFixed(2)}s)
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowTimeRangeModal(true)}
+                  className="btn-secondary flex items-center gap-2"
+                >
+                  <Settings size={18} />
+                  Set Range
+                </button>
               </div>
             </div>
 
@@ -928,6 +1015,146 @@ function App() {
 
       {/* Frame Preview Modal */}
       {renderFramePreviewModal()}
+
+      {/* Time Range Modal */}
+      {showTimeRangeModal && analysisResult && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
+          onClick={() => setShowTimeRangeModal(false)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-semibold">Select Time Range</h3>
+              <button
+                onClick={() => setShowTimeRangeModal(false)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Time Range Selector */}
+            <div className="space-y-6">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Choose the start and end times for frame extraction.
+              </p>
+
+              {/* Dual Range Slider */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">Start Time: {startTime.toFixed(2)}s</span>
+                  <span className="font-medium">End Time: {endTime.toFixed(2)}s</span>
+                </div>
+
+                <div className="relative pt-1">
+                  <input
+                    type="range"
+                    min={0}
+                    max={analysisResult.video_info.duration}
+                    step={0.01}
+                    value={startTime}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (val < endTime) setStartTime(val);
+                    }}
+                    className="w-full"
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={analysisResult.video_info.duration}
+                    step={0.01}
+                    value={endTime}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (val > startTime) setEndTime(val);
+                    }}
+                    className="w-full -mt-2"
+                  />
+                </div>
+
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg text-sm">
+                  <strong>Duration:</strong> {(endTime - startTime).toFixed(2)}s
+                </div>
+              </div>
+
+              {/* Text Inputs */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Start Time (seconds)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={endTime}
+                    step={0.01}
+                    value={startTime.toFixed(2)}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val) && val >= 0 && val < endTime) {
+                        setStartTime(val);
+                      }
+                    }}
+                    className="input-field w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    End Time (seconds)
+                  </label>
+                  <input
+                    type="number"
+                    min={startTime}
+                    max={analysisResult.video_info.duration}
+                    step={0.01}
+                    value={endTime.toFixed(2)}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val) && val > startTime && val <= analysisResult.video_info.duration) {
+                        setEndTime(val);
+                      }
+                    }}
+                    className="input-field w-full"
+                  />
+                </div>
+              </div>
+
+              {/* Frame Numbers */}
+              <div className="grid grid-cols-2 gap-4 text-sm text-gray-600 dark:text-gray-400">
+                <div>
+                  <strong>Start Frame:</strong> {Math.floor(startTime * analysisResult.video_info.fps)}
+                </div>
+                <div>
+                  <strong>End Frame:</strong> {Math.floor(endTime * analysisResult.video_info.fps)}
+                </div>
+              </div>
+
+              {/* Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowTimeRangeModal(false)}
+                  className="btn-secondary flex-1"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowTimeRangeModal(false);
+                  }}
+                  className="btn-primary flex-1"
+                >
+                  Save Range
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
