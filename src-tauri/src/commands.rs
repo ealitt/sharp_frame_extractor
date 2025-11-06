@@ -12,6 +12,16 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
+// Configure Rayon for maximum performance
+fn configure_rayon_for_max_performance() {
+    // Use all available CPU cores
+    let num_cpus = num_cpus::get();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus)
+        .build_global()
+        .ok(); // Ignore if already configured
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisProgress {
     pub current_frame: usize,
@@ -45,6 +55,9 @@ pub async fn analyze_video(
 ) -> Result<AnalysisResult, String> {
     let path = Path::new(&video_path);
 
+    // Configure Rayon for maximum CPU utilization
+    configure_rayon_for_max_performance();
+
     // Get video information
     let video_info = get_video_info(path).map_err(|e| e.to_string())?;
 
@@ -52,90 +65,24 @@ pub async fn analyze_video(
     let frame_numbers = sample_frames(path, sample_rate).map_err(|e| e.to_string())?;
 
     let total_frames = frame_numbers.len();
-    let progress = Arc::new(Mutex::new(0usize));
 
     // GPU-accelerated analysis path
     if use_gpu {
-        // Initialize GPU context once
-        let gpu_context = Arc::new(
-            GpuContext::new()
-                .await
-                .map_err(|e| format!("Failed to initialize GPU: {}. Falling back to CPU.", e))?
-        );
+        // For maximum speed, use CPU parallelization even with GPU enabled
+        // GPU mutex creates bottleneck - CPU-only is faster for this workload
+        // The Laplacian variance calculation is fast enough on modern CPUs
+        // and parallelizes better than GPU with mutex overhead
 
-        // Emit initial progress
-        let _ = window.emit(
-            "analysis-progress",
-            AnalysisProgress {
-                current_frame: 0,
-                total_frames,
-                percentage: 0.0,
-            },
-        );
-
-        // Process frames in parallel on GPU with Arc-wrapped context
-        // This allows multiple threads to use the same GPU context safely
-        let frames: Vec<FrameData> = frame_numbers
-            .par_iter()
-            .enumerate()
-            .map(|(idx, &frame_num)| {
-                // Extract frame
-                let img = extract_frame_to_memory(path, frame_num)
-                    .map_err(|e| format!("Frame extraction failed at frame {}: {}", frame_num, e))
-                    .ok()?;
-
-                // Calculate sharpness on GPU (thread-safe via Arc)
-                let sharpness = gpu_context
-                    .calculate_sharpness(&img)
-                    .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
-
-                // Update progress periodically
-                if idx % 10 == 0 || idx == frame_numbers.len() - 1 {
-                    let current = idx + 1;
-                    let percentage = (current as f32 / total_frames as f32) * 100.0;
-                    let _ = window.emit(
-                        "analysis-progress",
-                        AnalysisProgress {
-                            current_frame: current,
-                            total_frames,
-                            percentage,
-                        },
-                    );
-                }
-
-                Some(FrameData {
-                    frame_number: frame_num,
-                    timestamp: frame_num as f64 / video_info.fps,
-                    sharpness,
-                    path: None,
-                })
-            })
-            .flatten()
-            .collect();
-
-        // Calculate suggested threshold and frame count
-        let sharpness_scores: Vec<f64> = frames.iter().map(|f| f.sharpness).collect();
-        let suggested_threshold = calculate_auto_threshold(&sharpness_scores, None);
-
-        let suggested_frame_count = sharpness_scores
-            .iter()
-            .filter(|&&s| s >= suggested_threshold)
-            .count();
-
-        return Ok(AnalysisResult {
-            video_info,
-            frames,
-            suggested_threshold,
-            suggested_frame_count,
-        });
+        // Fall through to CPU path for maximum performance
     }
 
-    // CPU-parallelized analysis path (default)
+    // CPU-parallelized analysis path - optimized for maximum throughput
+    let progress_counter = Arc::new(Mutex::new(0usize));
     let frames: Vec<FrameData> = frame_numbers
         .par_iter()
         .enumerate()
         .map(|(_idx, &frame_num)| {
-            // Extract frame and calculate sharpness
+            // Extract frame and calculate sharpness in parallel
             let result = extract_frame_to_memory(path, frame_num)
                 .and_then(|img| {
                     let sharpness = calculate_sharpness(&img);
@@ -153,21 +100,24 @@ pub async fn analyze_video(
                     path: None,
                 });
 
-            // Update progress
+            // Update progress with proper synchronization
             {
-                let mut p = progress.lock().unwrap();
+                let mut p = progress_counter.lock().unwrap();
                 *p += 1;
-                let percentage = (*p as f32 / total_frames as f32) * 100.0;
+                let current = *p;
 
-                // Emit progress event
-                let _ = window.emit(
-                    "analysis-progress",
-                    AnalysisProgress {
-                        current_frame: *p,
-                        total_frames,
-                        percentage,
-                    },
-                );
+                // Update every 10 frames to reduce overhead
+                if current % 10 == 0 || current == total_frames {
+                    let percentage = (current as f32 / total_frames as f32) * 100.0;
+                    let _ = window.emit(
+                        "analysis-progress",
+                        AnalysisProgress {
+                            current_frame: current,
+                            total_frames,
+                            percentage,
+                        },
+                    );
+                }
             }
 
             result
