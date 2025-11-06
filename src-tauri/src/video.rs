@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
-use ffmpeg_sidecar::{command::FfmpegCommand, download::auto_download, paths::sidecar_dir};
+use std::sync::OnceLock;
+use ffmpeg_sidecar;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -23,122 +24,132 @@ pub struct FrameData {
     pub path: Option<String>,
 }
 
-/// Ensures FFmpeg binaries are available and returns the path to the binary
-fn get_ffmpeg_path() -> Result<PathBuf> {
-    // In production builds, look for bundled binaries in the sidecar directory
-    #[cfg(not(debug_assertions))]
-    {
-        // Get the current executable path
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                // Platform-specific binary names for Tauri bundled binaries
-                #[cfg(target_os = "windows")]
-                let binary_name = "ffmpeg.exe";
+// Cache for FFmpeg binary paths to avoid repeated lookups
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+static FFPROBE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-                #[cfg(target_os = "macos")]
-                let binary_name = "ffmpeg-x86_64-apple-darwin";
+/// Ensures FFmpeg binaries are downloaded and available
+fn ensure_ffmpeg_available() -> Result<()> {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
 
-                #[cfg(target_os = "linux")]
-                let binary_name = "ffmpeg-x86_64-unknown-linux-gnu";
+    INIT.call_once(|| {
+        // Try to auto-download FFmpeg binaries on first call
+        if let Err(e) = ffmpeg_sidecar::download::auto_download() {
+            eprintln!("Warning: Failed to auto-download FFmpeg: {}", e);
+            eprintln!("Will attempt to use system FFmpeg from PATH");
+        } else {
+            println!("FFmpeg binaries downloaded successfully");
+        }
+    });
 
-                // Check common Tauri sidecar locations
-                let possible_paths = vec![
-                    exe_dir.join(binary_name),
-                    exe_dir.join("../Resources").join(binary_name), // macOS .app bundle
-                    exe_dir.join("bin").join(binary_name),
-                ];
+    Ok(())
+}
 
-                for path in possible_paths {
-                    if path.exists() {
-                        return Ok(path);
-                    }
+/// Finds the FFmpeg binary path
+fn find_ffmpeg_binary() -> Result<PathBuf> {
+    // First, try to ensure FFmpeg is downloaded
+    ensure_ffmpeg_available()?;
+
+    #[cfg(target_os = "windows")]
+    let ffmpeg_name = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_name = "ffmpeg";
+
+    // Try ffmpeg-sidecar directory first
+    if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
+        let ffmpeg_path = sidecar.join(ffmpeg_name);
+        if ffmpeg_path.exists() {
+            println!("Found FFmpeg at: {}", ffmpeg_path.display());
+            return Ok(ffmpeg_path);
+        }
+    }
+
+    // Try checking next to the executable (for bundled binaries)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check various possible locations
+            let possible_paths = vec![
+                exe_dir.join(ffmpeg_name),
+                exe_dir.join("../Resources").join(ffmpeg_name),
+                exe_dir.join("bin").join(ffmpeg_name),
+            ];
+
+            for path in possible_paths {
+                if path.exists() {
+                    println!("Found FFmpeg at: {}", path.display());
+                    return Ok(path);
                 }
             }
         }
-
-        // Try ffmpeg-sidecar as fallback
-        auto_download().ok();
-        if let Ok(sidecar) = sidecar_dir() {
-            #[cfg(target_os = "windows")]
-            let ffmpeg_name = "ffmpeg.exe";
-            #[cfg(not(target_os = "windows"))]
-            let ffmpeg_name = "ffmpeg";
-
-            let ffmpeg_path = sidecar.join(ffmpeg_name);
-            if ffmpeg_path.exists() {
-                return Ok(ffmpeg_path);
-            }
-        }
     }
 
-    // In development or as final fallback, use system FFmpeg
-    #[cfg(debug_assertions)]
-    {
-        // Try system FFmpeg first in debug mode
-        return Ok(PathBuf::from("ffmpeg"));
-    }
-
-    // Final fallback for production
+    // Fall back to system PATH
+    println!("Using system FFmpeg from PATH");
     Ok(PathBuf::from("ffmpeg"))
 }
 
-/// Ensures FFprobe is available and returns the path to the binary
-fn get_ffprobe_path() -> Result<PathBuf> {
-    // In production builds, look for bundled binaries in the sidecar directory
-    #[cfg(not(debug_assertions))]
-    {
-        // Get the current executable path
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                // Platform-specific binary names for Tauri bundled binaries
-                #[cfg(target_os = "windows")]
-                let binary_name = "ffprobe.exe";
+/// Finds the FFprobe binary path
+fn find_ffprobe_binary() -> Result<PathBuf> {
+    // First, try to ensure FFmpeg is downloaded
+    ensure_ffmpeg_available()?;
 
-                #[cfg(target_os = "macos")]
-                let binary_name = "ffprobe-x86_64-apple-darwin";
+    #[cfg(target_os = "windows")]
+    let ffprobe_name = "ffprobe.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffprobe_name = "ffprobe";
 
-                #[cfg(target_os = "linux")]
-                let binary_name = "ffprobe-x86_64-unknown-linux-gnu";
+    // Try ffmpeg-sidecar directory first
+    if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
+        let ffprobe_path = sidecar.join(ffprobe_name);
+        if ffprobe_path.exists() {
+            println!("Found FFprobe at: {}", ffprobe_path.display());
+            return Ok(ffprobe_path);
+        }
+    }
 
-                // Check common Tauri sidecar locations
-                let possible_paths = vec![
-                    exe_dir.join(binary_name),
-                    exe_dir.join("../Resources").join(binary_name), // macOS .app bundle
-                    exe_dir.join("bin").join(binary_name),
-                ];
+    // Try checking next to the executable (for bundled binaries)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check various possible locations
+            let possible_paths = vec![
+                exe_dir.join(ffprobe_name),
+                exe_dir.join("../Resources").join(ffprobe_name),
+                exe_dir.join("bin").join(ffprobe_name),
+            ];
 
-                for path in possible_paths {
-                    if path.exists() {
-                        return Ok(path);
-                    }
+            for path in possible_paths {
+                if path.exists() {
+                    println!("Found FFprobe at: {}", path.display());
+                    return Ok(path);
                 }
             }
         }
-
-        // Try ffmpeg-sidecar as fallback
-        auto_download().ok();
-        if let Ok(sidecar) = sidecar_dir() {
-            #[cfg(target_os = "windows")]
-            let ffprobe_name = "ffprobe.exe";
-            #[cfg(not(target_os = "windows"))]
-            let ffprobe_name = "ffprobe";
-
-            let ffprobe_path = sidecar.join(ffprobe_name);
-            if ffprobe_path.exists() {
-                return Ok(ffprobe_path);
-            }
-        }
     }
 
-    // In development or as final fallback, use system FFprobe
-    #[cfg(debug_assertions)]
-    {
-        // Try system FFprobe first in debug mode
-        return Ok(PathBuf::from("ffprobe"));
-    }
-
-    // Final fallback for production
+    // Fall back to system PATH
+    println!("Using system FFprobe from PATH");
     Ok(PathBuf::from("ffprobe"))
+}
+
+/// Gets or initializes the FFmpeg binary path
+fn get_ffmpeg_path() -> Result<PathBuf> {
+    FFMPEG_PATH
+        .get_or_init(|| {
+            find_ffmpeg_binary().unwrap_or_else(|_| PathBuf::from("ffmpeg"))
+        })
+        .clone()
+        .into()
+}
+
+/// Gets or initializes the FFprobe binary path
+fn get_ffprobe_path() -> Result<PathBuf> {
+    FFPROBE_PATH
+        .get_or_init(|| {
+            find_ffprobe_binary().unwrap_or_else(|_| PathBuf::from("ffprobe"))
+        })
+        .clone()
+        .into()
 }
 
 /// Extracts video metadata using ffprobe

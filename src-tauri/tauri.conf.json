@@ -38,14 +38,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "externalBin": [
-      "binaries/ffmpeg-x86_64-apple-darwin",
-      "binaries/ffprobe-x86_64-apple-darwin",
-      "binaries/ffmpeg-x86_64-unknown-linux-gnu",
-      "binaries/ffprobe-x86_64-unknown-linux-gnu",
-      "binaries/ffmpeg.exe",
-      "binaries/ffprobe.exe"
     ]
   }
 }
