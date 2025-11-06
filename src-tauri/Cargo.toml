@@ -16,6 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+ffmpeg-sidecar = "2.0"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -33,4 +34,5 @@ base64 = "0.22"
 wgpu = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.3"
+ffmpeg-sidecar = "2.0"
 

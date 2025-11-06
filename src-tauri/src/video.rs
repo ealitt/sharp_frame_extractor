@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
+use ffmpeg_sidecar::{command::FfmpegCommand, download::auto_download, paths::sidecar_dir};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -22,9 +23,128 @@ pub struct FrameData {
     pub path: Option<String>,
 }
 
+/// Ensures FFmpeg binaries are available and returns the path to the binary
+fn get_ffmpeg_path() -> Result<PathBuf> {
+    // In production builds, look for bundled binaries in the sidecar directory
+    #[cfg(not(debug_assertions))]
+    {
+        // Get the current executable path
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                // Platform-specific binary names for Tauri bundled binaries
+                #[cfg(target_os = "windows")]
+                let binary_name = "ffmpeg.exe";
+
+                #[cfg(target_os = "macos")]
+                let binary_name = "ffmpeg-x86_64-apple-darwin";
+
+                #[cfg(target_os = "linux")]
+                let binary_name = "ffmpeg-x86_64-unknown-linux-gnu";
+
+                // Check common Tauri sidecar locations
+                let possible_paths = vec![
+                    exe_dir.join(binary_name),
+                    exe_dir.join("../Resources").join(binary_name), // macOS .app bundle
+                    exe_dir.join("bin").join(binary_name),
+                ];
+
+                for path in possible_paths {
+                    if path.exists() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+
+        // Try ffmpeg-sidecar as fallback
+        auto_download().ok();
+        if let Ok(sidecar) = sidecar_dir() {
+            #[cfg(target_os = "windows")]
+            let ffmpeg_name = "ffmpeg.exe";
+            #[cfg(not(target_os = "windows"))]
+            let ffmpeg_name = "ffmpeg";
+
+            let ffmpeg_path = sidecar.join(ffmpeg_name);
+            if ffmpeg_path.exists() {
+                return Ok(ffmpeg_path);
+            }
+        }
+    }
+
+    // In development or as final fallback, use system FFmpeg
+    #[cfg(debug_assertions)]
+    {
+        // Try system FFmpeg first in debug mode
+        return Ok(PathBuf::from("ffmpeg"));
+    }
+
+    // Final fallback for production
+    Ok(PathBuf::from("ffmpeg"))
+}
+
+/// Ensures FFprobe is available and returns the path to the binary
+fn get_ffprobe_path() -> Result<PathBuf> {
+    // In production builds, look for bundled binaries in the sidecar directory
+    #[cfg(not(debug_assertions))]
+    {
+        // Get the current executable path
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                // Platform-specific binary names for Tauri bundled binaries
+                #[cfg(target_os = "windows")]
+                let binary_name = "ffprobe.exe";
+
+                #[cfg(target_os = "macos")]
+                let binary_name = "ffprobe-x86_64-apple-darwin";
+
+                #[cfg(target_os = "linux")]
+                let binary_name = "ffprobe-x86_64-unknown-linux-gnu";
+
+                // Check common Tauri sidecar locations
+                let possible_paths = vec![
+                    exe_dir.join(binary_name),
+                    exe_dir.join("../Resources").join(binary_name), // macOS .app bundle
+                    exe_dir.join("bin").join(binary_name),
+                ];
+
+                for path in possible_paths {
+                    if path.exists() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+
+        // Try ffmpeg-sidecar as fallback
+        auto_download().ok();
+        if let Ok(sidecar) = sidecar_dir() {
+            #[cfg(target_os = "windows")]
+            let ffprobe_name = "ffprobe.exe";
+            #[cfg(not(target_os = "windows"))]
+            let ffprobe_name = "ffprobe";
+
+            let ffprobe_path = sidecar.join(ffprobe_name);
+            if ffprobe_path.exists() {
+                return Ok(ffprobe_path);
+            }
+        }
+    }
+
+    // In development or as final fallback, use system FFprobe
+    #[cfg(debug_assertions)]
+    {
+        // Try system FFprobe first in debug mode
+        return Ok(PathBuf::from("ffprobe"));
+    }
+
+    // Final fallback for production
+    Ok(PathBuf::from("ffprobe"))
+}
+
 /// Extracts video metadata using ffprobe
 pub fn get_video_info(video_path: &Path) -> Result<VideoInfo> {
-    let output = Command::new("ffprobe")
+    let ffprobe_path = get_ffprobe_path()?;
+    let output = Command::new(&ffprobe_path)
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -100,11 +220,13 @@ fn detect_hw_accel() -> Vec<String> {
     #[cfg(not(target_os = "macos"))]
     {
         // Check if CUDA is available
-        if Command::new("ffmpeg").args(["-hwaccels"]).output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).contains("cuda"))
-            .unwrap_or(false)
-        {
-            accel_args.extend(vec!["-hwaccel".to_string(), "cuda".to_string()]);
+        if let Ok(ffmpeg_path) = get_ffmpeg_path() {
+            if Command::new(&ffmpeg_path).args(["-hwaccels"]).output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).contains("cuda"))
+                .unwrap_or(false)
+            {
+                accel_args.extend(vec!["-hwaccel".to_string(), "cuda".to_string()]);
+            }
         }
     }
 
@@ -123,7 +245,8 @@ pub fn extract_frame(video_path: &Path, frame_number: usize, output_path: &Path)
     }
 
     // Build command with hardware acceleration
-    let mut cmd = Command::new("ffmpeg");
+    let ffmpeg_path = get_ffmpeg_path()?;
+    let mut cmd = Command::new(&ffmpeg_path);
     let hw_accel = detect_hw_accel();
 
     // Add hardware acceleration args if available
@@ -193,7 +316,8 @@ pub fn extract_frames_to_memory_batch(
         .join("+");
 
     // Build command with hardware acceleration
-    let mut cmd = Command::new("ffmpeg");
+    let ffmpeg_path = get_ffmpeg_path()?;
+    let mut cmd = Command::new(&ffmpeg_path);
     let hw_accel = detect_hw_accel();
 
     // Add hardware acceleration args
