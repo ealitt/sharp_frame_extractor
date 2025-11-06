@@ -73,7 +73,10 @@ function App() {
   const [videoDuration, setVideoDuration] = useState<number>(0);
   const [startTime, setStartTime] = useState<number>(0);
   const [endTime, setEndTime] = useState<number>(0);
-  const [draggingSlider, setDraggingSlider] = useState<'start' | 'end' | null>(null);
+
+  // For handling text input temporary values
+  const [startTimeInput, setStartTimeInput] = useState<string>('0');
+  const [endTimeInput, setEndTimeInput] = useState<string>('0');
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -108,6 +111,8 @@ function App() {
                 setVideoDuration(info.duration);
                 setStartTime(0);
                 setEndTime(info.duration);
+                setStartTimeInput('0');
+                setEndTimeInput(info.duration.toString());
               } catch (error) {
                 console.error('Failed to get video metadata:', error);
               }
@@ -151,6 +156,8 @@ function App() {
         setVideoDuration(info.duration);
         setStartTime(0);
         setEndTime(info.duration);
+        setStartTimeInput('0');
+        setEndTimeInput(info.duration.toString());
       } catch (error) {
         console.error('Failed to get video metadata:', error);
       }
@@ -210,6 +217,8 @@ function App() {
     setVideoDuration(0);
     setStartTime(0);
     setEndTime(0);
+    setStartTimeInput('0');
+    setEndTimeInput('0');
   };
 
   const handleFrameClick = async (frameIndex: number) => {
@@ -433,7 +442,17 @@ function App() {
   const renderSelectionModeUI = () => {
     return (
       <div className="card space-y-4">
-        <h3 className="text-lg font-semibold">Frame Selection</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Frame Selection</h3>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="btn-secondary flex items-center gap-2"
+            title="Toggle advanced settings"
+          >
+            <Settings size={18} />
+            <span className="text-sm">Settings</span>
+          </button>
+        </div>
 
         {/* Selection Mode Tabs */}
         <div className="flex flex-wrap gap-2">
@@ -809,7 +828,7 @@ function App() {
                               width: `${((endTime - startTime) / videoDuration) * 100}%`
                             }}
                           ></div>
-                          {/* Start time slider */}
+                          {/* Start time slider - always accessible */}
                           <input
                             type="range"
                             min={0}
@@ -818,18 +837,30 @@ function App() {
                             value={startTime}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              if (val < endTime) setStartTime(val);
+                              if (val < endTime) {
+                                setStartTime(val);
+                                setStartTimeInput(val.toString());
+                              }
                             }}
-                            onMouseDown={() => setDraggingSlider('start')}
-                            onMouseUp={() => setDraggingSlider(null)}
-                            onTouchStart={() => setDraggingSlider('start')}
-                            onTouchEnd={() => setDraggingSlider(null)}
-                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-slider-thumb"
                             style={{
-                              zIndex: draggingSlider === 'start' ? 6 : 4
+                              zIndex: 5,
+                              pointerEvents: 'none'
                             }}
                           />
-                          {/* End time slider */}
+                          <style>{`
+                            .range-slider-thumb::-webkit-slider-thumb {
+                              pointer-events: auto;
+                              position: relative;
+                              z-index: 10;
+                            }
+                            .range-slider-thumb::-moz-range-thumb {
+                              pointer-events: auto;
+                              position: relative;
+                              z-index: 10;
+                            }
+                          `}</style>
+                          {/* End time slider - always accessible */}
                           <input
                             type="range"
                             min={0}
@@ -838,15 +869,15 @@ function App() {
                             value={endTime}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              if (val > startTime) setEndTime(val);
+                              if (val > startTime) {
+                                setEndTime(val);
+                                setEndTimeInput(val.toString());
+                              }
                             }}
-                            onMouseDown={() => setDraggingSlider('end')}
-                            onMouseUp={() => setDraggingSlider(null)}
-                            onTouchStart={() => setDraggingSlider('end')}
-                            onTouchEnd={() => setDraggingSlider(null)}
-                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-slider-thumb"
                             style={{
-                              zIndex: draggingSlider === 'end' ? 6 : 5
+                              zIndex: 6,
+                              pointerEvents: 'none'
                             }}
                           />
                         </div>
@@ -858,14 +889,14 @@ function App() {
                               Start Time (seconds)
                             </label>
                             <input
-                              type="number"
-                              min={0}
-                              max={videoDuration}
-                              step={0.1}
-                              value={startTime}
+                              type="text"
+                              inputMode="decimal"
+                              value={startTimeInput}
                               onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val)) {
+                                const input = e.target.value;
+                                setStartTimeInput(input);
+                                const val = parseFloat(input);
+                                if (!isNaN(val) && val >= 0 && val < endTime) {
                                   setStartTime(val);
                                 }
                               }}
@@ -874,11 +905,23 @@ function App() {
                                 const val = parseFloat(e.target.value);
                                 if (isNaN(val) || val < 0) {
                                   setStartTime(0);
+                                  setStartTimeInput('0');
                                 } else if (val >= endTime) {
-                                  setStartTime(Math.max(0, endTime - 0.1));
+                                  const corrected = Math.max(0, endTime - 0.1);
+                                  setStartTime(corrected);
+                                  setStartTimeInput(corrected.toString());
                                 } else if (val > videoDuration) {
-                                  setStartTime(Math.max(0, videoDuration - 0.1));
+                                  const corrected = Math.max(0, videoDuration - 0.1);
+                                  setStartTime(corrected);
+                                  setStartTimeInput(corrected.toString());
+                                } else {
+                                  setStartTime(val);
+                                  setStartTimeInput(val.toString());
                                 }
+                              }}
+                              onFocus={(e) => {
+                                // Select all text on focus for easy editing
+                                e.target.select();
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -888,14 +931,14 @@ function App() {
                               End Time (seconds)
                             </label>
                             <input
-                              type="number"
-                              min={0}
-                              max={videoDuration}
-                              step={0.1}
-                              value={endTime}
+                              type="text"
+                              inputMode="decimal"
+                              value={endTimeInput}
                               onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val)) {
+                                const input = e.target.value;
+                                setEndTimeInput(input);
+                                const val = parseFloat(input);
+                                if (!isNaN(val) && val > startTime && val <= videoDuration) {
                                   setEndTime(val);
                                 }
                               }}
@@ -904,11 +947,22 @@ function App() {
                                 const val = parseFloat(e.target.value);
                                 if (isNaN(val) || val > videoDuration) {
                                   setEndTime(videoDuration);
+                                  setEndTimeInput(videoDuration.toString());
                                 } else if (val <= startTime) {
-                                  setEndTime(Math.min(videoDuration, startTime + 0.1));
+                                  const corrected = Math.min(videoDuration, startTime + 0.1);
+                                  setEndTime(corrected);
+                                  setEndTimeInput(corrected.toString());
                                 } else if (val < 0) {
                                   setEndTime(videoDuration);
+                                  setEndTimeInput(videoDuration.toString());
+                                } else {
+                                  setEndTime(val);
+                                  setEndTimeInput(val.toString());
                                 }
+                              }}
+                              onFocus={(e) => {
+                                // Select all text on focus for easy editing
+                                e.target.select();
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -1104,15 +1158,7 @@ function App() {
 
             {/* Export Controls */}
             <div className="card space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">Export Settings</h3>
-                <button
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="btn-secondary"
-                >
-                  <Settings size={20} />
-                </button>
-              </div>
+              <h3 className="text-lg font-semibold">Export Settings</h3>
 
               <div>
                 <label className="block text-sm font-medium mb-2">Export Format</label>
