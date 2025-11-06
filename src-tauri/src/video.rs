@@ -34,12 +34,40 @@ fn ensure_ffmpeg_available() -> Result<()> {
     static INIT: Once = Once::new();
 
     INIT.call_once(|| {
+        eprintln!("=== FFmpeg Setup ===");
+        eprintln!("Attempting to download FFmpeg binaries...");
+
         // Try to auto-download FFmpeg binaries on first call
-        if let Err(e) = ffmpeg_sidecar::download::auto_download() {
-            eprintln!("Warning: Failed to auto-download FFmpeg: {}", e);
-            eprintln!("Will attempt to use system FFmpeg from PATH");
-        } else {
-            println!("FFmpeg binaries downloaded successfully");
+        match ffmpeg_sidecar::download::auto_download() {
+            Ok(_) => {
+                eprintln!("✓ FFmpeg binaries downloaded successfully");
+                // Verify the download worked
+                if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
+                    eprintln!("  Sidecar directory: {}", sidecar.display());
+
+                    #[cfg(target_os = "windows")]
+                    let files = vec!["ffmpeg.exe", "ffprobe.exe"];
+                    #[cfg(not(target_os = "windows"))]
+                    let files = vec!["ffmpeg", "ffprobe"];
+
+                    for file in files {
+                        let path = sidecar.join(file);
+                        if path.exists() {
+                            eprintln!("  ✓ Found: {}", path.display());
+                        } else {
+                            eprintln!("  ✗ Missing: {}", path.display());
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠ Warning: Failed to auto-download FFmpeg: {}", e);
+                eprintln!("  Will attempt to use system FFmpeg from PATH");
+                eprintln!("  You can install FFmpeg with:");
+                eprintln!("    macOS: brew install ffmpeg");
+                eprintln!("    Linux: sudo apt install ffmpeg");
+                eprintln!("    Windows: choco install ffmpeg");
+            }
         }
     });
 
@@ -48,6 +76,8 @@ fn ensure_ffmpeg_available() -> Result<()> {
 
 /// Finds the FFmpeg binary path
 fn find_ffmpeg_binary() -> Result<PathBuf> {
+    eprintln!("\n=== Looking for FFmpeg ===");
+
     // First, try to ensure FFmpeg is downloaded
     ensure_ffmpeg_available()?;
 
@@ -59,15 +89,31 @@ fn find_ffmpeg_binary() -> Result<PathBuf> {
     // Try ffmpeg-sidecar directory first
     if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
         let ffmpeg_path = sidecar.join(ffmpeg_name);
+        eprintln!("1. Checking sidecar directory: {}", ffmpeg_path.display());
         if ffmpeg_path.exists() {
-            println!("Found FFmpeg at: {}", ffmpeg_path.display());
-            return Ok(ffmpeg_path);
+            eprintln!("   ✓ Found FFmpeg at: {}", ffmpeg_path.display());
+
+            // Test if it actually works
+            if let Ok(output) = Command::new(&ffmpeg_path).arg("-version").output() {
+                if output.status.success() {
+                    eprintln!("   ✓ FFmpeg is executable and working");
+                    return Ok(ffmpeg_path);
+                } else {
+                    eprintln!("   ✗ FFmpeg exists but failed to execute");
+                }
+            } else {
+                eprintln!("   ✗ FFmpeg exists but is not executable");
+            }
+        } else {
+            eprintln!("   ✗ Not found at sidecar location");
         }
     }
 
     // Try checking next to the executable (for bundled binaries)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            eprintln!("2. Checking near executable: {}", exe_dir.display());
+
             // Check various possible locations
             let possible_paths = vec![
                 exe_dir.join(ffmpeg_name),
@@ -76,21 +122,43 @@ fn find_ffmpeg_binary() -> Result<PathBuf> {
             ];
 
             for path in possible_paths {
+                eprintln!("   Checking: {}", path.display());
                 if path.exists() {
-                    println!("Found FFmpeg at: {}", path.display());
+                    eprintln!("   ✓ Found FFmpeg at: {}", path.display());
                     return Ok(path);
                 }
             }
+            eprintln!("   ✗ Not found near executable");
         }
     }
 
     // Fall back to system PATH
-    println!("Using system FFmpeg from PATH");
+    eprintln!("3. Falling back to system PATH");
+    eprintln!("   Trying to use 'ffmpeg' from PATH...");
+
+    // Test if system FFmpeg works
+    if let Ok(output) = Command::new("ffmpeg").arg("-version").output() {
+        if output.status.success() {
+            eprintln!("   ✓ System FFmpeg found and working");
+            return Ok(PathBuf::from("ffmpeg"));
+        }
+    }
+
+    eprintln!("   ✗ System FFmpeg not found or not working");
+    eprintln!("\n⚠ ERROR: Could not find working FFmpeg binary!");
+    eprintln!("Please install FFmpeg manually:");
+    eprintln!("  macOS: brew install ffmpeg");
+    eprintln!("  Linux: sudo apt install ffmpeg");
+    eprintln!("  Windows: choco install ffmpeg");
+
+    // Return the PATH version as last resort, will fail with better error
     Ok(PathBuf::from("ffmpeg"))
 }
 
 /// Finds the FFprobe binary path
 fn find_ffprobe_binary() -> Result<PathBuf> {
+    eprintln!("\n=== Looking for FFprobe ===");
+
     // First, try to ensure FFmpeg is downloaded
     ensure_ffmpeg_available()?;
 
@@ -102,15 +170,31 @@ fn find_ffprobe_binary() -> Result<PathBuf> {
     // Try ffmpeg-sidecar directory first
     if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
         let ffprobe_path = sidecar.join(ffprobe_name);
+        eprintln!("1. Checking sidecar directory: {}", ffprobe_path.display());
         if ffprobe_path.exists() {
-            println!("Found FFprobe at: {}", ffprobe_path.display());
-            return Ok(ffprobe_path);
+            eprintln!("   ✓ Found FFprobe at: {}", ffprobe_path.display());
+
+            // Test if it actually works
+            if let Ok(output) = Command::new(&ffprobe_path).arg("-version").output() {
+                if output.status.success() {
+                    eprintln!("   ✓ FFprobe is executable and working");
+                    return Ok(ffprobe_path);
+                } else {
+                    eprintln!("   ✗ FFprobe exists but failed to execute");
+                }
+            } else {
+                eprintln!("   ✗ FFprobe exists but is not executable");
+            }
+        } else {
+            eprintln!("   ✗ Not found at sidecar location");
         }
     }
 
     // Try checking next to the executable (for bundled binaries)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            eprintln!("2. Checking near executable: {}", exe_dir.display());
+
             // Check various possible locations
             let possible_paths = vec![
                 exe_dir.join(ffprobe_name),
@@ -119,16 +203,36 @@ fn find_ffprobe_binary() -> Result<PathBuf> {
             ];
 
             for path in possible_paths {
+                eprintln!("   Checking: {}", path.display());
                 if path.exists() {
-                    println!("Found FFprobe at: {}", path.display());
+                    eprintln!("   ✓ Found FFprobe at: {}", path.display());
                     return Ok(path);
                 }
             }
+            eprintln!("   ✗ Not found near executable");
         }
     }
 
     // Fall back to system PATH
-    println!("Using system FFprobe from PATH");
+    eprintln!("3. Falling back to system PATH");
+    eprintln!("   Trying to use 'ffprobe' from PATH...");
+
+    // Test if system FFprobe works
+    if let Ok(output) = Command::new("ffprobe").arg("-version").output() {
+        if output.status.success() {
+            eprintln!("   ✓ System FFprobe found and working");
+            return Ok(PathBuf::from("ffprobe"));
+        }
+    }
+
+    eprintln!("   ✗ System FFprobe not found or not working");
+    eprintln!("\n⚠ ERROR: Could not find working FFprobe binary!");
+    eprintln!("Please install FFmpeg manually:");
+    eprintln!("  macOS: brew install ffmpeg");
+    eprintln!("  Linux: sudo apt install ffmpeg");
+    eprintln!("  Windows: choco install ffmpeg");
+
+    // Return the PATH version as last resort, will fail with better error
     Ok(PathBuf::from("ffprobe"))
 }
 
