@@ -73,6 +73,7 @@ function App() {
   const [videoDuration, setVideoDuration] = useState<number>(0);
   const [startTime, setStartTime] = useState<number>(0);
   const [endTime, setEndTime] = useState<number>(0);
+  const [draggingSlider, setDraggingSlider] = useState<'start' | 'end' | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -819,9 +820,13 @@ function App() {
                               const val = parseFloat(e.target.value);
                               if (val < endTime) setStartTime(val);
                             }}
+                            onMouseDown={() => setDraggingSlider('start')}
+                            onMouseUp={() => setDraggingSlider(null)}
+                            onTouchStart={() => setDraggingSlider('start')}
+                            onTouchEnd={() => setDraggingSlider(null)}
                             className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
                             style={{
-                              zIndex: 4
+                              zIndex: draggingSlider === 'start' ? 6 : 4
                             }}
                           />
                           {/* End time slider */}
@@ -835,9 +840,13 @@ function App() {
                               const val = parseFloat(e.target.value);
                               if (val > startTime) setEndTime(val);
                             }}
+                            onMouseDown={() => setDraggingSlider('end')}
+                            onMouseUp={() => setDraggingSlider(null)}
+                            onTouchStart={() => setDraggingSlider('end')}
+                            onTouchEnd={() => setDraggingSlider(null)}
                             className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
                             style={{
-                              zIndex: 5
+                              zIndex: draggingSlider === 'end' ? 6 : 5
                             }}
                           />
                         </div>
@@ -856,7 +865,7 @@ function App() {
                               value={startTime}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val >= 0 && val < endTime) {
+                                if (!isNaN(val)) {
                                   setStartTime(val);
                                 }
                               }}
@@ -866,7 +875,9 @@ function App() {
                                 if (isNaN(val) || val < 0) {
                                   setStartTime(0);
                                 } else if (val >= endTime) {
-                                  setStartTime(endTime - 0.1);
+                                  setStartTime(Math.max(0, endTime - 0.1));
+                                } else if (val > videoDuration) {
+                                  setStartTime(Math.max(0, videoDuration - 0.1));
                                 }
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -884,7 +895,7 @@ function App() {
                               value={endTime}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val > startTime && val <= videoDuration) {
+                                if (!isNaN(val)) {
                                   setEndTime(val);
                                 }
                               }}
@@ -894,7 +905,9 @@ function App() {
                                 if (isNaN(val) || val > videoDuration) {
                                   setEndTime(videoDuration);
                                 } else if (val <= startTime) {
-                                  setEndTime(startTime + 0.1);
+                                  setEndTime(Math.min(videoDuration, startTime + 0.1));
+                                } else if (val < 0) {
+                                  setEndTime(videoDuration);
                                 }
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
