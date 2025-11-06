@@ -797,12 +797,12 @@ function App() {
                     {videoDuration > 0 ? (
                       <div className="space-y-3">
                         {/* Dual Range Slider with visual track */}
-                        <div className="relative h-8">
+                        <div className="relative h-8 mb-4">
                           {/* Background track */}
                           <div className="absolute top-3 left-0 right-0 h-2 bg-gray-300 dark:bg-gray-600 rounded"></div>
                           {/* Active range highlight */}
                           <div
-                            className="absolute top-3 h-2 bg-blue-500 rounded"
+                            className="absolute top-3 h-2 bg-blue-500 rounded pointer-events-none"
                             style={{
                               left: `${(startTime / videoDuration) * 100}%`,
                               width: `${((endTime - startTime) / videoDuration) * 100}%`
@@ -819,10 +819,9 @@ function App() {
                               const val = parseFloat(e.target.value);
                               if (val < endTime) setStartTime(val);
                             }}
-                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-thumb-start"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
                             style={{
-                              pointerEvents: 'auto',
-                              zIndex: startTime > endTime - 1 ? 5 : 4
+                              zIndex: 4
                             }}
                           />
                           {/* End time slider */}
@@ -836,10 +835,9 @@ function App() {
                               const val = parseFloat(e.target.value);
                               if (val > startTime) setEndTime(val);
                             }}
-                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-thumb-end"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer"
                             style={{
-                              pointerEvents: 'auto',
-                              zIndex: 3
+                              zIndex: 5
                             }}
                           />
                         </div>
@@ -848,18 +846,27 @@ function App() {
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-medium mb-1 text-gray-600 dark:text-gray-400">
-                              Start Time (s)
+                              Start Time (seconds)
                             </label>
                             <input
                               type="number"
                               min={0}
-                              max={videoDuration - 0.1}
+                              max={videoDuration}
                               step={0.1}
-                              value={startTime.toFixed(1)}
+                              value={startTime}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
                                 if (!isNaN(val) && val >= 0 && val < endTime) {
                                   setStartTime(val);
+                                }
+                              }}
+                              onBlur={(e) => {
+                                // Ensure valid value on blur
+                                const val = parseFloat(e.target.value);
+                                if (isNaN(val) || val < 0) {
+                                  setStartTime(0);
+                                } else if (val >= endTime) {
+                                  setStartTime(endTime - 0.1);
                                 }
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -867,18 +874,27 @@ function App() {
                           </div>
                           <div>
                             <label className="block text-xs font-medium mb-1 text-gray-600 dark:text-gray-400">
-                              End Time (s)
+                              End Time (seconds)
                             </label>
                             <input
                               type="number"
-                              min={startTime + 0.1}
+                              min={0}
                               max={videoDuration}
                               step={0.1}
-                              value={endTime.toFixed(1)}
+                              value={endTime}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
                                 if (!isNaN(val) && val > startTime && val <= videoDuration) {
                                   setEndTime(val);
+                                }
+                              }}
+                              onBlur={(e) => {
+                                // Ensure valid value on blur
+                                const val = parseFloat(e.target.value);
+                                if (isNaN(val) || val > videoDuration) {
+                                  setEndTime(videoDuration);
+                                } else if (val <= startTime) {
+                                  setEndTime(startTime + 0.1);
                                 }
                               }}
                               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -928,11 +944,11 @@ function App() {
                       className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="useGpu" className="text-sm font-medium">
-                      Use GPU Acceleration (Metal on Mac, NVIDIA CUDA on Windows/Linux)
+                      GPU Acceleration (experimental)
                     </label>
                   </div>
                   <p className="text-xs text-gray-600 dark:text-gray-400">
-                    {useGpu ? 'GPU acceleration enabled - faster processing' : 'Using CPU only - slower but compatible with all systems'}
+                    {useGpu ? 'Currently uses multi-core CPU processing for optimal speed. GPU support is experimental and may not improve performance.' : 'Multi-core CPU processing - optimized for maximum throughput'}
                   </p>
                 </div>
                 <button onClick={analyzeVideo} className="btn-primary w-full">
