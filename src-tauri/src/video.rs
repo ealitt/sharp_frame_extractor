@@ -94,7 +94,6 @@ fn detect_hw_accel() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
         accel_args.extend(vec!["-hwaccel".to_string(), "videotoolbox".to_string()]);
-        return accel_args;
     }
 
     // Try CUDA (NVIDIA GPUs on Linux/Windows)
@@ -132,8 +131,9 @@ pub fn extract_frame(video_path: &Path, frame_number: usize, output_path: &Path)
         cmd.arg(arg);
     }
 
-    // Add remaining args
+    // Add remaining args with threading support
     cmd.args([
+        "-threads", "1", // One thread per FFmpeg instance (we parallelize at process level)
         "-ss", &timestamp.to_string(),
         "-i", video_path.to_str().unwrap(),
         "-vframes", "1",
@@ -172,6 +172,76 @@ pub fn extract_frame_to_memory(video_path: &Path, frame_number: usize) -> Result
     Ok(img)
 }
 
+/// Extracts multiple frames in a single FFmpeg call for better performance
+pub fn extract_frames_to_memory_batch(
+    video_path: &Path,
+    frame_numbers: &[usize],
+) -> Result<Vec<DynamicImage>> {
+    let temp_dir = std::env::temp_dir();
+    let batch_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let temp_output_dir = temp_dir.join(format!("frame_batch_{}", batch_id));
+    fs::create_dir_all(&temp_output_dir)?;
+
+    // Create a filter expression for selecting specific frames
+    let select_expr = frame_numbers
+        .iter()
+        .map(|&frame_num| format!("eq(n\\,{})", frame_num))
+        .collect::<Vec<_>>()
+        .join("+");
+
+    // Build command with hardware acceleration
+    let mut cmd = Command::new("ffmpeg");
+    let hw_accel = detect_hw_accel();
+
+    // Add hardware acceleration args
+    for arg in &hw_accel {
+        cmd.arg(arg);
+    }
+
+    // Extract all frames in one go using select filter
+    cmd.args([
+        "-i", video_path.to_str().unwrap(),
+        "-vf", &format!("select='{}'", select_expr),
+        "-vsync", "0",
+        "-q:v", "2",
+        "-f", "image2",
+        &format!("{}/frame_%06d.jpg", temp_output_dir.display()),
+    ]);
+
+    let output = cmd.output()
+        .context("Failed to execute ffmpeg batch extraction")?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ffmpeg batch extraction failed: {}", error);
+    }
+
+    // Load all extracted frames
+    let mut images = Vec::new();
+    let entries = fs::read_dir(&temp_output_dir)?;
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|ext| ext == "jpg").unwrap_or(false))
+        .collect();
+
+    paths.sort(); // Ensure correct order
+
+    for path in &paths {
+        let img = image::open(path)
+            .context("Failed to load extracted frame")?;
+        images.push(img);
+    }
+
+    // Clean up temp directory
+    let _ = fs::remove_dir_all(&temp_output_dir);
+
+    Ok(images)
+}
+
 /// Extracts multiple frames efficiently using a single ffmpeg command
 pub fn extract_frames_batch(
     video_path: &Path,
@@ -194,12 +264,29 @@ pub fn extract_frames_batch(
 }
 
 /// Samples frames from a video at regular intervals for analysis
-pub fn sample_frames(video_path: &Path, sample_rate: usize) -> Result<Vec<usize>> {
+/// Optionally filters to a specific time range (in seconds)
+pub fn sample_frames(
+    video_path: &Path,
+    sample_rate: usize,
+    start_time: Option<f64>,
+    end_time: Option<f64>,
+) -> Result<Vec<usize>> {
     let info = get_video_info(video_path)?;
     let total_frames = info.total_frames as usize;
 
+    // Calculate frame range from time range
+    let start_frame = start_time
+        .map(|t| (t * info.fps).floor() as usize)
+        .unwrap_or(0)
+        .min(total_frames.saturating_sub(1));
+
+    let end_frame = end_time
+        .map(|t| (t * info.fps).ceil() as usize)
+        .unwrap_or(total_frames)
+        .min(total_frames);
+
     let mut frame_numbers = Vec::new();
-    for i in (0..total_frames).step_by(sample_rate) {
+    for i in (start_frame..end_frame).step_by(sample_rate) {
         frame_numbers.push(i);
     }
 

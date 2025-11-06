@@ -1,3 +1,88 @@
+//! # Image Quality Metrics for 3D Reconstruction
+//!
+//! This module provides image quality assessment for selecting optimal frames
+//! for 3D reconstruction pipelines (COLMAP, Gaussian Splatting, NeRF).
+//!
+//! ## Currently Implemented
+//!
+//! ### Laplacian Variance (Sharpness)
+//! - Detects blur by measuring high-frequency content (edges)
+//! - Essential for avoiding motion blur and defocus
+//! - Most critical metric for 3D reconstruction quality
+//!
+//! ## Recommended Additional Metrics for Future Implementation
+//!
+//! Based on research in photogrammetry and 3D reconstruction, the following
+//! metrics would significantly improve frame selection quality:
+//!
+//! ### 1. Feature Detection Density (HIGH PRIORITY)
+//! - **Metric**: Count of SIFT/SURF/ORB keypoints per image
+//! - **Why**: COLMAP relies on feature matching between images
+//! - **Implementation**: Use opencv-rust or imageproc for feature detection
+//! - **Threshold**: Images with <100 features often fail in SfM
+//! - **Research**: SIFT features are invariant to rotation, scale, illumination
+//!
+//! ### 2. Exposure Quality (HIGH PRIORITY)
+//! - **Metric**: Histogram distribution and dynamic range
+//! - **Why**: Over/under-exposed images lack texture information
+//! - **Implementation**: Analyze histogram mean, std dev, and clipping
+//! - **Threshold**: Reject if >5% pixels are clipped (0 or 255)
+//! - **Research**: Histogram should be centered for optimal reconstruction
+//!
+//! ### 3. Texture Richness (MEDIUM PRIORITY)
+//! - **Metric**: Local standard deviation or entropy
+//! - **Why**: Low-texture regions (walls, sky) fail to match
+//! - **Implementation**: Calculate entropy or variance in patches
+//! - **Threshold**: Reject images with <30% high-variance regions
+//! - **Research**: Texture density critical for feature extraction
+//!
+//! ### 4. Motion Blur Detection (MEDIUM PRIORITY)
+//! - **Metric**: Directional gradient analysis or FFT
+//! - **Why**: Motion blur different from defocus blur
+//! - **Implementation**: Analyze gradient directionality
+//! - **Threshold**: High directional bias indicates motion blur
+//! - **Research**: Camera-induced vs object-induced blur distinction
+//!
+//! ### 5. Brightness Consistency (LOW PRIORITY)
+//! - **Metric**: Mean luminance across sequence
+//! - **Why**: Large exposure changes affect feature matching
+//! - **Implementation**: Track mean brightness, flag outliers
+//! - **Threshold**: Reject if >2 std dev from sequence mean
+//! - **Research**: Consistent lighting improves reconstruction
+//!
+//! ### 6. Color/Contrast Quality (LOW PRIORITY)
+//! - **Metric**: RMS contrast or color variance
+//! - **Why**: Low contrast reduces feature distinctiveness
+//! - **Implementation**: Calculate global and local contrast
+//! - **Threshold**: Minimum contrast ratio of 20:1
+//!
+//! ## Integration Strategy
+//!
+//! 1. **Phase 1**: Add feature detection density (biggest impact)
+//! 2. **Phase 2**: Add exposure analysis (prevents common failures)
+//! 3. **Phase 3**: Add texture richness and motion blur
+//! 4. **Phase 4**: Add brightness consistency across sequence
+//!
+//! ## Dependencies Needed
+//!
+//! - `opencv-rust` or `imageproc`: Feature detection (SIFT, SURF, ORB)
+//! - `image`: Already included (for histogram, entropy)
+//! - `rustfft`: For frequency-domain analysis (motion blur)
+//!
+//! ## Performance Considerations
+//!
+//! - Feature detection is expensive: ~50-200ms per frame
+//! - Can reuse features computed by COLMAP later
+//! - Consider GPU acceleration for feature detection
+//! - Histogram analysis is fast: ~1-5ms per frame
+//!
+//! ## Research References
+//!
+//! - "Key-Point-Descriptor-Based Image Quality Evaluation" (MDPI 2024)
+//! - "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
+//! - "Performance Analysis of SIFT Operator in Photogrammetric Applications"
+//! - COLMAP documentation on image quality requirements
+
 use image::{DynamicImage, GrayImage};
 
 /// Calculates the sharpness of an image using the Laplacian variance method.

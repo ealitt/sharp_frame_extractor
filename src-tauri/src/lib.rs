@@ -4,7 +4,7 @@ mod video;
 mod gpu_sharpness;
 
 use commands::{
-    analyze_video, calculate_threshold_for_count, export_frames, get_video_metadata,
+    analyze_video, calculate_threshold_for_count, export_frames, get_frame_preview, get_video_metadata,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,6 +17,7 @@ pub fn run() {
             export_frames,
             get_video_metadata,
             calculate_threshold_for_count,
+            get_frame_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

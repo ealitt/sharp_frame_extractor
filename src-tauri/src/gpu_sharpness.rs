@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use image::DynamicImage;
-use wgpu::util::DeviceExt;
+use std::sync::Mutex;
 
 // WGSL Compute Shader for Laplacian filtering
 const LAPLACIAN_SHADER: &str = r#"
@@ -50,19 +50,26 @@ fn laplacian_compute(
 "#;
 
 // GPU context that can be reused across multiple calculations
+// Safe to share across threads with internal synchronization
 pub struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    // Mutex to ensure thread-safe GPU command submission
+    gpu_lock: Mutex<()>,
 }
 
 impl GpuContext {
     /// Initialize GPU context once and reuse it
     pub async fn new() -> Result<Self> {
-        // Create wgpu instance
+        // Create wgpu instance with Metal backend priority on macOS
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: if cfg!(target_os = "macos") {
+                wgpu::Backends::METAL // Force Metal on macOS for best performance
+            } else {
+                wgpu::Backends::all()
+            },
             ..Default::default()
         });
 
@@ -145,11 +152,16 @@ impl GpuContext {
             queue,
             pipeline,
             bind_group_layout,
+            gpu_lock: Mutex::new(()),
         })
     }
 
-    /// Calculate sharpness of an image using GPU
+    /// Calculate sharpness of an image using GPU (thread-safe)
     pub fn calculate_sharpness(&self, img: &DynamicImage) -> Result<f64> {
+        // Acquire lock to ensure thread-safe GPU operations
+        let _lock = self.gpu_lock.lock().unwrap();
+
+
         // Convert to grayscale
         let gray_img = img.to_luma8();
         let (width, height) = gray_img.dimensions();
@@ -300,25 +312,6 @@ impl GpuContext {
 
         Ok(variance)
     }
-}
-
-/// Convenience function to calculate sharpness with GPU
-/// Creates a new GPU context for single use (less efficient)
-pub fn calculate_sharpness_gpu(img: &DynamicImage) -> Result<f64> {
-    let context = pollster::block_on(GpuContext::new())?;
-    context.calculate_sharpness(img)
-}
-
-/// Batch processing with reusable GPU context (recommended for multiple images)
-pub fn calculate_sharpness_batch_gpu(images: &[DynamicImage]) -> Result<Vec<f64>> {
-    let context = pollster::block_on(GpuContext::new())?;
-    let mut results = Vec::with_capacity(images.len());
-
-    for img in images {
-        results.push(context.calculate_sharpness(img)?);
-    }
-
-    Ok(results)
 }
 
 #[cfg(test)]

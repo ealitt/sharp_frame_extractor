@@ -1,15 +1,26 @@
 use crate::sharpness::{calculate_auto_threshold, calculate_sharpness, select_frames_smart};
 use crate::gpu_sharpness::GpuContext;
 use crate::video::{
-    extract_frame_to_memory, extract_frames_batch, get_video_info, sample_frames, FrameData,
+    extract_frame_to_memory, extract_frames_batch, extract_frames_to_memory_batch, get_video_info, sample_frames, FrameData,
     VideoInfo,
 };
 use anyhow::Result;
+use image::GenericImageView;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
+
+// Configure Rayon for maximum performance
+fn configure_rayon_for_max_performance() {
+    // Use all available CPU cores
+    let num_cpus = num_cpus::get();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus)
+        .build_global()
+        .ok(); // Ignore if already configured
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisProgress {
@@ -40,94 +51,40 @@ pub async fn analyze_video(
     video_path: String,
     sample_rate: usize,
     use_gpu: bool,
+    start_time: Option<f64>,
+    end_time: Option<f64>,
     window: tauri::Window,
 ) -> Result<AnalysisResult, String> {
     let path = Path::new(&video_path);
 
+    // Configure Rayon for maximum CPU utilization
+    configure_rayon_for_max_performance();
+
     // Get video information
     let video_info = get_video_info(path).map_err(|e| e.to_string())?;
 
-    // Sample frames to analyze
-    let frame_numbers = sample_frames(path, sample_rate).map_err(|e| e.to_string())?;
+    // Sample frames to analyze with optional time range filtering
+    let frame_numbers = sample_frames(path, sample_rate, start_time, end_time).map_err(|e| e.to_string())?;
 
     let total_frames = frame_numbers.len();
-    let progress = Arc::new(Mutex::new(0usize));
 
     // GPU-accelerated analysis path
     if use_gpu {
-        // Initialize GPU context once
-        let gpu_context = GpuContext::new()
-            .await
-            .map_err(|e| format!("Failed to initialize GPU: {}. Falling back to CPU.", e))?;
+        // For maximum speed, use CPU parallelization even with GPU enabled
+        // GPU mutex creates bottleneck - CPU-only is faster for this workload
+        // The Laplacian variance calculation is fast enough on modern CPUs
+        // and parallelizes better than GPU with mutex overhead
 
-        let frames: Vec<FrameData> = frame_numbers
-            .par_iter()
-            .enumerate()
-            .map(|(_idx, &frame_num)| {
-                // Extract frame and calculate sharpness using GPU
-                let result = extract_frame_to_memory(path, frame_num)
-                    .and_then(|img| {
-                        let sharpness = gpu_context
-                            .calculate_sharpness(&img)
-                            .unwrap_or_else(|_| calculate_sharpness(&img)); // Fallback to CPU on error
-                        Ok(FrameData {
-                            frame_number: frame_num,
-                            timestamp: frame_num as f64 / video_info.fps,
-                            sharpness,
-                            path: None,
-                        })
-                    })
-                    .unwrap_or_else(|_| FrameData {
-                        frame_number: frame_num,
-                        timestamp: frame_num as f64 / video_info.fps,
-                        sharpness: 0.0,
-                        path: None,
-                    });
-
-                // Update progress
-                {
-                    let mut p = progress.lock().unwrap();
-                    *p += 1;
-                    let percentage = (*p as f32 / total_frames as f32) * 100.0;
-
-                    // Emit progress event
-                    let _ = window.emit(
-                        "analysis-progress",
-                        AnalysisProgress {
-                            current_frame: *p,
-                            total_frames,
-                            percentage,
-                        },
-                    );
-                }
-
-                result
-            })
-            .collect();
-
-        // Calculate suggested threshold and frame count
-        let sharpness_scores: Vec<f64> = frames.iter().map(|f| f.sharpness).collect();
-        let suggested_threshold = calculate_auto_threshold(&sharpness_scores, None);
-
-        let suggested_frame_count = sharpness_scores
-            .iter()
-            .filter(|&&s| s >= suggested_threshold)
-            .count();
-
-        return Ok(AnalysisResult {
-            video_info,
-            frames,
-            suggested_threshold,
-            suggested_frame_count,
-        });
+        // Fall through to CPU path for maximum performance
     }
 
-    // CPU-parallelized analysis path (default)
+    // CPU-parallelized analysis path - optimized for maximum throughput
+    let progress_counter = Arc::new(Mutex::new(0usize));
     let frames: Vec<FrameData> = frame_numbers
         .par_iter()
         .enumerate()
         .map(|(_idx, &frame_num)| {
-            // Extract frame and calculate sharpness
+            // Extract frame and calculate sharpness in parallel
             let result = extract_frame_to_memory(path, frame_num)
                 .and_then(|img| {
                     let sharpness = calculate_sharpness(&img);
@@ -145,21 +102,24 @@ pub async fn analyze_video(
                     path: None,
                 });
 
-            // Update progress
+            // Update progress with proper synchronization
             {
-                let mut p = progress.lock().unwrap();
+                let mut p = progress_counter.lock().unwrap();
                 *p += 1;
-                let percentage = (*p as f32 / total_frames as f32) * 100.0;
+                let current = *p;
 
-                // Emit progress event
-                let _ = window.emit(
-                    "analysis-progress",
-                    AnalysisProgress {
-                        current_frame: *p,
-                        total_frames,
-                        percentage,
-                    },
-                );
+                // Update every 10 frames to reduce overhead
+                if current % 10 == 0 || current == total_frames {
+                    let percentage = (current as f32 / total_frames as f32) * 100.0;
+                    let _ = window.emit(
+                        "analysis-progress",
+                        AnalysisProgress {
+                            current_frame: current,
+                            total_frames,
+                            percentage,
+                        },
+                    );
+                }
             }
 
             result
@@ -258,6 +218,43 @@ pub fn calculate_threshold_for_count(
     target_count: usize,
 ) -> Result<f64, String> {
     Ok(calculate_auto_threshold(&sharpness_scores, Some(target_count)))
+}
+
+/// Gets a frame image as base64 for preview
+#[tauri::command]
+pub async fn get_frame_preview(
+    video_path: String,
+    frame_number: usize,
+) -> Result<String, String> {
+    use image::ImageFormat;
+    use std::io::Cursor;
+    use base64::{engine::general_purpose, Engine as _};
+
+    let path = Path::new(&video_path);
+
+    // Extract frame to memory
+    let img = extract_frame_to_memory(path, frame_number)
+        .map_err(|e| e.to_string())?;
+
+    // Resize for preview (max 800px width to reduce data size)
+    let (width, height) = img.dimensions();
+    let preview_img = if width > 800 {
+        let scale = 800.0 / width as f32;
+        let new_width = 800;
+        let new_height = (height as f32 * scale) as u32;
+        img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    // Convert to JPEG and encode as base64
+    let mut bytes: Vec<u8> = Vec::new();
+    preview_img
+        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())?;
+
+    let base64_str = general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/jpeg;base64,{}", base64_str))
 }
 
 #[cfg(test)]
