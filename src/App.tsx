@@ -47,7 +47,7 @@ function App() {
   const [threshold, setThreshold] = useState<number>(0);
   const [maxFrames, setMaxFrames] = useState<number | undefined>(undefined);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
-  const [minFrameDistance, setMinFrameDistance] = useState<number>(5);
+  const [minFrameDistance, setMinFrameDistance] = useState<number>(1);
   const [sampleRate, setSampleRate] = useState<number>(1);
   const [useGpu, setUseGpu] = useState<boolean>(true);
   const [exporting, setExporting] = useState(false);
@@ -72,7 +72,6 @@ function App() {
   // Time range state
   const [startTime, setStartTime] = useState<number>(0);
   const [endTime, setEndTime] = useState<number>(0);
-  const [showTimeRangeModal, setShowTimeRangeModal] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -127,11 +126,21 @@ function App() {
     });
 
     if (selected) {
-      setVideoPath(selected as string);
-      setVideoUrl(convertFileSrc(selected as string));
+      const filePath = selected as string;
+      setVideoPath(filePath);
+      setVideoUrl(convertFileSrc(filePath));
       setAnalysisResult(null);
       setProgress(null);
       setManuallySelectedFrames(new Set());
+
+      // Get video info to set initial time range
+      try {
+        const info = await invoke<any>('get_video_metadata', { videoPath: filePath });
+        setStartTime(0);
+        setEndTime(info.duration);
+      } catch (error) {
+        console.error('Failed to get video metadata:', error);
+      }
     }
   };
 
@@ -142,20 +151,19 @@ function App() {
       setAnalyzing(true);
       setProgress(null);
 
+      // Pass time range to backend if set (null if using full video)
       const result = await invoke<AnalysisResult>('analyze_video', {
         videoPath,
         sampleRate,
         useGpu,
+        startTime: startTime > 0 || endTime > 0 ? startTime : null,
+        endTime: startTime > 0 || endTime > 0 ? endTime : null,
       });
 
       setAnalysisResult(result);
       setThreshold(result.suggested_threshold);
       setSelectionSettings(prev => ({ ...prev, mode: 'threshold' }));
       setSelectionMode('threshold');
-
-      // Initialize time range to full video
-      setStartTime(0);
-      setEndTime(result.video_info.duration);
     } catch (error) {
       console.error('Analysis failed:', error);
       alert(`Analysis failed: ${error}`);
@@ -171,7 +179,7 @@ function App() {
     setProgress(null);
     setThreshold(0);
     setMaxFrames(undefined);
-    setMinFrameDistance(5);
+    setMinFrameDistance(1);
     setSampleRate(1);
     setExporting(false);
     setShowSettings(false);
@@ -188,7 +196,6 @@ function App() {
     setPreviewImageUrl(null);
     setStartTime(0);
     setEndTime(0);
-    setShowTimeRangeModal(false);
   };
 
   const handleFrameClick = async (frameIndex: number) => {
@@ -229,34 +236,23 @@ function App() {
   const getSelectedFrameIndices = (): number[] => {
     if (!analysisResult) return [];
 
-    // Filter frames by time range first
-    const framesInRange = analysisResult.frames
-      .map((f, idx) => ({ ...f, idx }))
-      .filter(f => f.timestamp >= startTime && f.timestamp <= endTime);
-
-    const sharpnessScores = framesInRange.map(f => f.sharpness);
+    const sharpnessScores = analysisResult.frames.map(f => f.sharpness);
 
     switch (selectionMode) {
       case 'manual':
-        // Filter manual selections to only include frames in time range
-        return Array.from(manuallySelectedFrames)
-          .filter(idx => {
-            const frame = analysisResult.frames[idx];
-            return frame && frame.timestamp >= startTime && frame.timestamp <= endTime;
-          })
-          .sort((a, b) => a - b);
+        return Array.from(manuallySelectedFrames).sort((a, b) => a - b);
 
       case 'batch': {
-        // Select best frame from each batch (within time range)
+        // Select best frame from each batch
         const { batchSize, batchBuffer } = selectionSettings;
         const selected: number[] = [];
         let i = 0;
 
-        while (i < framesInRange.length) {
-          const batchEnd = Math.min(i + batchSize, framesInRange.length);
+        while (i < analysisResult.frames.length) {
+          const batchEnd = Math.min(i + batchSize, analysisResult.frames.length);
           const batchScores = sharpnessScores.slice(i, batchEnd);
           const maxIdx = batchScores.indexOf(Math.max(...batchScores));
-          selected.push(framesInRange[i + maxIdx].idx);
+          selected.push(i + maxIdx);
           i = batchEnd + batchBuffer;
         }
 
@@ -264,27 +260,28 @@ function App() {
       }
 
       case 'bestN': {
-        // Select top N frames by sharpness (within time range)
-        const indexed = framesInRange.map(f => ({ score: f.sharpness, idx: f.idx }));
+        // Select top N frames by sharpness
+        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
         indexed.sort((a, b) => b.score - a.score);
         return indexed.slice(0, selectionSettings.bestN).map(item => item.idx).sort((a, b) => a - b);
       }
 
       case 'topPercentage': {
-        // Select top X% of frames by sharpness (within time range)
-        const count = Math.ceil(framesInRange.length * selectionSettings.topPercentage / 100);
-        const indexed = framesInRange.map(f => ({ score: f.sharpness, idx: f.idx }));
+        // Select top X% of frames by sharpness
+        const count = Math.ceil(analysisResult.frames.length * selectionSettings.topPercentage / 100);
+        const indexed = sharpnessScores.map((score, idx) => ({ score, idx }));
         indexed.sort((a, b) => b.score - a.score);
         return indexed.slice(0, count).map(item => item.idx).sort((a, b) => a - b);
       }
 
       case 'threshold':
       default: {
-        // Threshold-based selection (within time range)
-        let framesAboveThreshold = framesInRange.filter((f) => f.sharpness >= threshold);
+        // Threshold-based selection
+        let framesAboveThreshold = analysisResult.frames
+          .map((f, idx) => ({ ...f, idx }))
+          .filter((f) => f.sharpness >= threshold);
 
         // Only apply min distance if it's greater than 1
-        // This fixes the bug where threshold=0 with minFrameDistance=5 only selects every 5th frame
         if (minFrameDistance > 1) {
           const selectedFrames: typeof framesAboveThreshold = [];
           let lastSelected: number | null = null;
@@ -338,7 +335,6 @@ function App() {
 
       // Get selected frame indices
       const selectedIndices = getSelectedFrameIndices();
-      const frameNumbers = selectedIndices.map(idx => analysisResult.frames[idx].frame_number);
 
       // Create a custom result with only selected frames
       const customResult = {
@@ -771,6 +767,59 @@ function App() {
               <>
                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg space-y-3">
                   <h4 className="font-semibold text-sm">Analysis Settings</h4>
+
+                  {/* Time Range Selector */}
+                  <div className="border-t border-blue-200 dark:border-blue-800 pt-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-medium flex items-center gap-2">
+                        <Clock size={16} />
+                        Time Range
+                      </label>
+                      {endTime > 0 && (
+                        <span className="text-xs text-gray-600 dark:text-gray-400">
+                          {startTime.toFixed(2)}s - {endTime.toFixed(2)}s ({(endTime - startTime).toFixed(2)}s)
+                        </span>
+                      )}
+                    </div>
+                    {endTime > 0 ? (
+                      <>
+                        <div className="space-y-2 mb-2">
+                          <input
+                            type="range"
+                            min={0}
+                            max={endTime > 0 ? endTime : 100}
+                            step={0.01}
+                            value={startTime}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (val < endTime) setStartTime(val);
+                            }}
+                            className="w-full"
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={endTime > 0 ? endTime : 100}
+                            step={0.01}
+                            value={endTime}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (val > startTime) setEndTime(val);
+                            }}
+                            className="w-full"
+                          />
+                        </div>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">
+                          Only analyze frames from {startTime.toFixed(2)}s to {endTime.toFixed(2)}s
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 italic">
+                        Time range will be available after video metadata is loaded
+                      </p>
+                    )}
+                  </div>
+
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-sm font-medium">
@@ -944,28 +993,6 @@ function App() {
               </div>
             </div>
 
-            {/* Time Range Selector */}
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold flex items-center gap-2">
-                    <Clock size={20} />
-                    Time Range
-                  </h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    {startTime.toFixed(2)}s - {endTime.toFixed(2)}s (Duration: {(endTime - startTime).toFixed(2)}s)
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowTimeRangeModal(true)}
-                  className="btn-secondary flex items-center gap-2"
-                >
-                  <Settings size={18} />
-                  Set Range
-                </button>
-              </div>
-            </div>
-
             {/* Frame Selection UI */}
             {renderSelectionModeUI()}
 
@@ -1015,146 +1042,6 @@ function App() {
 
       {/* Frame Preview Modal */}
       {renderFramePreviewModal()}
-
-      {/* Time Range Modal */}
-      {showTimeRangeModal && analysisResult && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
-          onClick={() => setShowTimeRangeModal(false)}
-        >
-          <div
-            className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-semibold">Select Time Range</h3>
-              <button
-                onClick={() => setShowTimeRangeModal(false)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Time Range Selector */}
-            <div className="space-y-6">
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Choose the start and end times for frame extraction.
-              </p>
-
-              {/* Dual Range Slider */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">Start Time: {startTime.toFixed(2)}s</span>
-                  <span className="font-medium">End Time: {endTime.toFixed(2)}s</span>
-                </div>
-
-                <div className="relative pt-1">
-                  <input
-                    type="range"
-                    min={0}
-                    max={analysisResult.video_info.duration}
-                    step={0.01}
-                    value={startTime}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (val < endTime) setStartTime(val);
-                    }}
-                    className="w-full"
-                  />
-                  <input
-                    type="range"
-                    min={0}
-                    max={analysisResult.video_info.duration}
-                    step={0.01}
-                    value={endTime}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (val > startTime) setEndTime(val);
-                    }}
-                    className="w-full -mt-2"
-                  />
-                </div>
-
-                <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg text-sm">
-                  <strong>Duration:</strong> {(endTime - startTime).toFixed(2)}s
-                </div>
-              </div>
-
-              {/* Text Inputs */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Start Time (seconds)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={endTime}
-                    step={0.01}
-                    value={startTime.toFixed(2)}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (!isNaN(val) && val >= 0 && val < endTime) {
-                        setStartTime(val);
-                      }
-                    }}
-                    className="input-field w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    End Time (seconds)
-                  </label>
-                  <input
-                    type="number"
-                    min={startTime}
-                    max={analysisResult.video_info.duration}
-                    step={0.01}
-                    value={endTime.toFixed(2)}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (!isNaN(val) && val > startTime && val <= analysisResult.video_info.duration) {
-                        setEndTime(val);
-                      }
-                    }}
-                    className="input-field w-full"
-                  />
-                </div>
-              </div>
-
-              {/* Frame Numbers */}
-              <div className="grid grid-cols-2 gap-4 text-sm text-gray-600 dark:text-gray-400">
-                <div>
-                  <strong>Start Frame:</strong> {Math.floor(startTime * analysisResult.video_info.fps)}
-                </div>
-                <div>
-                  <strong>End Frame:</strong> {Math.floor(endTime * analysisResult.video_info.fps)}
-                </div>
-              </div>
-
-              {/* Buttons */}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowTimeRangeModal(false)}
-                  className="btn-secondary flex-1"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    setShowTimeRangeModal(false);
-                  }}
-                  className="btn-primary flex-1"
-                >
-                  Save Range
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

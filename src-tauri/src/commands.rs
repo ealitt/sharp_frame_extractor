@@ -51,6 +51,8 @@ pub async fn analyze_video(
     video_path: String,
     sample_rate: usize,
     use_gpu: bool,
+    start_time: Option<f64>,
+    end_time: Option<f64>,
     window: tauri::Window,
 ) -> Result<AnalysisResult, String> {
     let path = Path::new(&video_path);
@@ -61,8 +63,8 @@ pub async fn analyze_video(
     // Get video information
     let video_info = get_video_info(path).map_err(|e| e.to_string())?;
 
-    // Sample frames to analyze
-    let frame_numbers = sample_frames(path, sample_rate).map_err(|e| e.to_string())?;
+    // Sample frames to analyze with optional time range filtering
+    let frame_numbers = sample_frames(path, sample_rate, start_time, end_time).map_err(|e| e.to_string())?;
 
     let total_frames = frame_numbers.len();
 

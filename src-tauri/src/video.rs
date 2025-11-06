@@ -264,12 +264,29 @@ pub fn extract_frames_batch(
 }
 
 /// Samples frames from a video at regular intervals for analysis
-pub fn sample_frames(video_path: &Path, sample_rate: usize) -> Result<Vec<usize>> {
+/// Optionally filters to a specific time range (in seconds)
+pub fn sample_frames(
+    video_path: &Path,
+    sample_rate: usize,
+    start_time: Option<f64>,
+    end_time: Option<f64>,
+) -> Result<Vec<usize>> {
     let info = get_video_info(video_path)?;
     let total_frames = info.total_frames as usize;
 
+    // Calculate frame range from time range
+    let start_frame = start_time
+        .map(|t| (t * info.fps).floor() as usize)
+        .unwrap_or(0)
+        .min(total_frames.saturating_sub(1));
+
+    let end_frame = end_time
+        .map(|t| (t * info.fps).ceil() as usize)
+        .unwrap_or(total_frames)
+        .min(total_frames);
+
     let mut frame_numbers = Vec::new();
-    for i in (0..total_frames).step_by(sample_rate) {
+    for i in (start_frame..end_frame).step_by(sample_rate) {
         frame_numbers.push(i);
     }
 
