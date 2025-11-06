@@ -224,29 +224,9 @@ npm run tauri build
 npm run tauri build
 # Creates .deb, .AppImage in src-tauri/target/release/bundle/
 ```
-
-## Future Enhancements
-
-Potential features for future releases:
-- Bundled FFmpeg (no external installation required)
-- Motion blur detection
-- Focus stacking support
-- Video trimming before analysis
-- Batch processing multiple videos
-- Export metadata file for COLMAP
-- Camera parameter extraction from EXIF
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
 ## License
 
-[Specify your license here]
+The source code in this repository is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 ## Acknowledgments
 
