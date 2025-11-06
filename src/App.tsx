@@ -70,6 +70,7 @@ function App() {
   const [loadingPreview, setLoadingPreview] = useState(false);
 
   // Time range state
+  const [videoDuration, setVideoDuration] = useState<number>(0);
   const [startTime, setStartTime] = useState<number>(0);
   const [endTime, setEndTime] = useState<number>(0);
 
@@ -85,7 +86,7 @@ function App() {
       });
 
       // Listen for file drop events using Tauri's onDragDropEvent
-      const unlistenFileDrop = await currentWindow.onDragDropEvent((event) => {
+      const unlistenFileDrop = await currentWindow.onDragDropEvent(async (event) => {
         console.log('Drag drop event:', event);
         if (event.payload.type === 'drop') {
           const paths = event.payload.paths;
@@ -99,6 +100,16 @@ function App() {
               setAnalysisResult(null);
               setProgress(null);
               setManuallySelectedFrames(new Set());
+
+              // Get video info to set initial time range
+              try {
+                const info = await invoke<any>('get_video_metadata', { videoPath: filePath });
+                setVideoDuration(info.duration);
+                setStartTime(0);
+                setEndTime(info.duration);
+              } catch (error) {
+                console.error('Failed to get video metadata:', error);
+              }
             }
           }
         }
@@ -136,6 +147,7 @@ function App() {
       // Get video info to set initial time range
       try {
         const info = await invoke<any>('get_video_metadata', { videoPath: filePath });
+        setVideoDuration(info.duration);
         setStartTime(0);
         setEndTime(info.duration);
       } catch (error) {
@@ -194,6 +206,7 @@ function App() {
     setManuallySelectedFrames(new Set());
     setPreviewFrame(null);
     setPreviewImageUrl(null);
+    setVideoDuration(0);
     setStartTime(0);
     setEndTime(0);
   };
@@ -770,49 +783,113 @@ function App() {
 
                   {/* Time Range Selector */}
                   <div className="border-t border-blue-200 dark:border-blue-800 pt-3">
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-3">
                       <label className="text-sm font-medium flex items-center gap-2">
                         <Clock size={16} />
                         Time Range
                       </label>
-                      {endTime > 0 && (
-                        <span className="text-xs text-gray-600 dark:text-gray-400">
-                          {startTime.toFixed(2)}s - {endTime.toFixed(2)}s ({(endTime - startTime).toFixed(2)}s)
+                      {videoDuration > 0 && (
+                        <span className="text-xs text-gray-600 dark:text-gray-400 font-medium">
+                          Selected: {(endTime - startTime).toFixed(2)}s of {videoDuration.toFixed(2)}s
                         </span>
                       )}
                     </div>
-                    {endTime > 0 ? (
-                      <>
-                        <div className="space-y-2 mb-2">
+                    {videoDuration > 0 ? (
+                      <div className="space-y-3">
+                        {/* Dual Range Slider with visual track */}
+                        <div className="relative h-8">
+                          {/* Background track */}
+                          <div className="absolute top-3 left-0 right-0 h-2 bg-gray-300 dark:bg-gray-600 rounded"></div>
+                          {/* Active range highlight */}
+                          <div
+                            className="absolute top-3 h-2 bg-blue-500 rounded"
+                            style={{
+                              left: `${(startTime / videoDuration) * 100}%`,
+                              width: `${((endTime - startTime) / videoDuration) * 100}%`
+                            }}
+                          ></div>
+                          {/* Start time slider */}
                           <input
                             type="range"
                             min={0}
-                            max={endTime > 0 ? endTime : 100}
-                            step={0.01}
+                            max={videoDuration}
+                            step={0.1}
                             value={startTime}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
                               if (val < endTime) setStartTime(val);
                             }}
-                            className="w-full"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-thumb-start"
+                            style={{
+                              pointerEvents: 'auto',
+                              zIndex: startTime > endTime - 1 ? 5 : 4
+                            }}
                           />
+                          {/* End time slider */}
                           <input
                             type="range"
                             min={0}
-                            max={endTime > 0 ? endTime : 100}
-                            step={0.01}
+                            max={videoDuration}
+                            step={0.1}
                             value={endTime}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
                               if (val > startTime) setEndTime(val);
                             }}
-                            className="w-full"
+                            className="absolute top-0 left-0 w-full h-8 appearance-none bg-transparent cursor-pointer range-thumb-end"
+                            style={{
+                              pointerEvents: 'auto',
+                              zIndex: 3
+                            }}
                           />
                         </div>
+
+                        {/* Manual input boxes */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium mb-1 text-gray-600 dark:text-gray-400">
+                              Start Time (s)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={videoDuration - 0.1}
+                              step={0.1}
+                              value={startTime.toFixed(1)}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 0 && val < endTime) {
+                                  setStartTime(val);
+                                }
+                              }}
+                              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium mb-1 text-gray-600 dark:text-gray-400">
+                              End Time (s)
+                            </label>
+                            <input
+                              type="number"
+                              min={startTime + 0.1}
+                              max={videoDuration}
+                              step={0.1}
+                              value={endTime.toFixed(1)}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val > startTime && val <= videoDuration) {
+                                  setEndTime(val);
+                                }
+                              }}
+                              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                        </div>
+
                         <p className="text-xs text-gray-600 dark:text-gray-400">
-                          Only analyze frames from {startTime.toFixed(2)}s to {endTime.toFixed(2)}s
+                          Analyze frames from {startTime.toFixed(2)}s to {endTime.toFixed(2)}s
                         </p>
-                      </>
+                      </div>
                     ) : (
                       <p className="text-xs text-gray-500 dark:text-gray-400 italic">
                         Time range will be available after video metadata is loaded
