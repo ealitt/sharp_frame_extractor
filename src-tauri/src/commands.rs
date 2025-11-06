@@ -1,7 +1,6 @@
 use crate::sharpness::{calculate_auto_threshold, calculate_sharpness, select_frames_smart};
-use crate::gpu_sharpness::GpuContext;
 use crate::video::{
-    extract_frame_to_memory, extract_frames_batch, extract_frames_to_memory_batch, get_video_info, sample_frames, FrameData,
+    extract_frame_to_memory, extract_frames_batch, get_video_info, sample_frames, FrameData,
     VideoInfo,
 };
 use anyhow::Result;

@@ -134,22 +134,20 @@ fn find_ffprobe_binary() -> Result<PathBuf> {
 
 /// Gets or initializes the FFmpeg binary path
 fn get_ffmpeg_path() -> Result<PathBuf> {
-    FFMPEG_PATH
+    Ok(FFMPEG_PATH
         .get_or_init(|| {
             find_ffmpeg_binary().unwrap_or_else(|_| PathBuf::from("ffmpeg"))
         })
-        .clone()
-        .into()
+        .clone())
 }
 
 /// Gets or initializes the FFprobe binary path
 fn get_ffprobe_path() -> Result<PathBuf> {
-    FFPROBE_PATH
+    Ok(FFPROBE_PATH
         .get_or_init(|| {
             find_ffprobe_binary().unwrap_or_else(|_| PathBuf::from("ffprobe"))
         })
-        .clone()
-        .into()
+        .clone())
 }
 
 /// Extracts video metadata using ffprobe
