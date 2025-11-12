@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -111,14 +111,18 @@ pub fn detect_ffmpeg_paths() -> (Option<PathBuf>, Option<PathBuf>) {
     #[cfg(target_os = "windows")]
     {
         // Check common Windows installation paths
-        let potential_dirs = vec![
-            r"C:\Program Files\ffmpeg\bin",
-            r"C:\ffmpeg\bin",
-            dirs::home_dir().map(|p| p.join(r"scoop\apps\ffmpeg\current\bin")),
-            dirs::home_dir().map(|p| p.join(r"AppData\Local\Microsoft\WinGet\Packages")),
+        let mut potential_dirs = vec![
+            PathBuf::from(r"C:\Program Files\ffmpeg\bin"),
+            PathBuf::from(r"C:\ffmpeg\bin"),
         ];
 
-        for dir in potential_dirs.into_iter().flatten() {
+        // Add user-specific paths if home directory exists
+        if let Some(home) = dirs::home_dir() {
+            potential_dirs.push(home.join(r"scoop\apps\ffmpeg\current\bin"));
+            potential_dirs.push(home.join(r"AppData\Local\Microsoft\WinGet\Packages"));
+        }
+
+        for dir in potential_dirs {
             let ffmpeg = dir.join("ffmpeg.exe");
             let ffprobe = dir.join("ffprobe.exe");
 
