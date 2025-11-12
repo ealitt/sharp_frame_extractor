@@ -16,11 +16,6 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ isOpen, onClose, isFirstRun = false }: SettingsDialogProps) {
-  const [settings, setSettings] = useState<AppSettings>({
-    ffmpeg_path: null,
-    ffprobe_path: null,
-    first_run: true,
-  });
   const [ffmpegPath, setFfmpegPath] = useState('');
   const [ffprobePath, setFfprobePath] = useState('');
   const [ffmpegValid, setFfmpegValid] = useState<boolean | null>(null);
@@ -39,7 +34,6 @@ export function SettingsDialog({ isOpen, onClose, isFirstRun = false }: Settings
   const loadSettings = async () => {
     try {
       const loaded = await invoke<AppSettings>('get_settings');
-      setSettings(loaded);
       setFfmpegPath(loaded.ffmpeg_path || '');
       setFfprobePath(loaded.ffprobe_path || '');
 
