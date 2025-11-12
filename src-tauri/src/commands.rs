@@ -1,7 +1,6 @@
 use crate::sharpness::{calculate_auto_threshold, calculate_sharpness, select_frames_smart};
-use crate::gpu_sharpness::GpuContext;
 use crate::video::{
-    extract_frame_to_memory, extract_frames_batch, extract_frames_to_memory_batch, get_video_info, sample_frames, FrameData,
+    extract_frame_to_memory, extract_frames_batch, get_video_info, sample_frames, FrameData,
     VideoInfo,
 };
 use anyhow::Result;
@@ -255,6 +254,43 @@ pub async fn get_frame_preview(
 
     let base64_str = general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:image/jpeg;base64,{}", base64_str))
+}
+
+/// Settings management commands
+use crate::settings::{AppSettings, detect_ffmpeg_paths, get_install_instructions};
+
+#[tauri::command]
+pub async fn get_settings() -> Result<AppSettings, String> {
+    AppSettings::load().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_settings(settings: AppSettings) -> Result<(), String> {
+    settings.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn detect_ffmpeg() -> Result<(Option<String>, Option<String>), String> {
+    let (ffmpeg, ffprobe) = detect_ffmpeg_paths();
+    Ok((
+        ffmpeg.map(|p| p.to_string_lossy().to_string()),
+        ffprobe.map(|p| p.to_string_lossy().to_string()),
+    ))
+}
+
+#[tauri::command]
+pub async fn get_ffmpeg_install_instructions() -> Result<Vec<String>, String> {
+    Ok(get_install_instructions())
+}
+
+#[tauri::command]
+pub async fn validate_ffmpeg_path(path: String) -> Result<bool, String> {
+    use std::process::Command;
+
+    match Command::new(&path).arg("-version").output() {
+        Ok(output) => Ok(output.status.success()),
+        Err(_) => Ok(false),
+    }
 }
 
 #[cfg(test)]

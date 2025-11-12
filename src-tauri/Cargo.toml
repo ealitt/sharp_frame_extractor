@@ -1,7 +1,7 @@
 [package]
 name = "sharp-frame-extractor"
-version = "0.1.0"
-description = "A Tauri App"
+version = "0.2.0"
+description = "Sharp Frame Extractor - Extract the sharpest frames from videos for 3D reconstruction"
 authors = ["you"]
 edition = "2021"
 
@@ -33,4 +33,6 @@ base64 = "0.22"
 wgpu = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.3"
+ffmpeg-sidecar = "2.0"
+dirs = "5.0"
 

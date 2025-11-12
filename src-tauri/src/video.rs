@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
+use std::sync::OnceLock;
+use crate::settings::AppSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -22,9 +24,166 @@ pub struct FrameData {
     pub path: Option<String>,
 }
 
+// Cache for FFmpeg binary paths to avoid repeated lookups
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+static FFPROBE_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Finds the FFmpeg binary path
+fn find_ffmpeg_binary() -> Result<PathBuf> {
+    eprintln!("\n=== Looking for FFmpeg ===");
+
+    // 1. Check user settings first
+    if let Ok(settings) = AppSettings::load() {
+        if let Some(custom_path) = settings.ffmpeg_path {
+            let path = PathBuf::from(&custom_path);
+            eprintln!("1. Checking custom path from settings: {}", path.display());
+
+            if path.exists() {
+                // Test if it works
+                if let Ok(output) = Command::new(&path).arg("-version").output() {
+                    if output.status.success() {
+                        eprintln!("   ✓ Custom FFmpeg path is valid and working");
+                        return Ok(path);
+                    } else {
+                        eprintln!("   ✗ Custom FFmpeg path exists but failed to execute");
+                    }
+                } else {
+                    eprintln!("   ✗ Custom FFmpeg path is not executable");
+                }
+            } else {
+                eprintln!("   ✗ Custom FFmpeg path does not exist");
+            }
+        }
+    }
+
+    // 2. Auto-detect using settings module
+    eprintln!("2. Auto-detecting FFmpeg installation...");
+    let (detected_ffmpeg, _) = crate::settings::detect_ffmpeg_paths();
+    if let Some(path) = detected_ffmpeg {
+        eprintln!("   ✓ Found FFmpeg at: {}", path.display());
+        return Ok(path);
+    } else {
+        eprintln!("   ✗ Auto-detection failed");
+    }
+
+    // 3. Fall back to system PATH
+    eprintln!("3. Falling back to system PATH");
+
+    #[cfg(target_os = "windows")]
+    let ffmpeg_cmd = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_cmd = "ffmpeg";
+
+    if let Ok(output) = Command::new(ffmpeg_cmd).arg("-version").output() {
+        if output.status.success() {
+            eprintln!("   ✓ System FFmpeg found and working");
+            return Ok(PathBuf::from(ffmpeg_cmd));
+        }
+    }
+
+    eprintln!("   ✗ System FFmpeg not found or not working");
+    eprintln!("\n⚠ ERROR: Could not find working FFmpeg binary!");
+    eprintln!("Please configure FFmpeg path in Settings or install it:");
+    eprintln!("  macOS: brew install ffmpeg");
+    eprintln!("  Linux: sudo apt install ffmpeg");
+    eprintln!("  Windows: choco install ffmpeg");
+
+    anyhow::bail!("FFmpeg not found. Please install FFmpeg or configure the path in Settings.")
+}
+
+/// Finds the FFprobe binary path
+fn find_ffprobe_binary() -> Result<PathBuf> {
+    eprintln!("\n=== Looking for FFprobe ===");
+
+    // 1. Check user settings first
+    if let Ok(settings) = AppSettings::load() {
+        if let Some(custom_path) = settings.ffprobe_path {
+            let path = PathBuf::from(&custom_path);
+            eprintln!("1. Checking custom path from settings: {}", path.display());
+
+            if path.exists() {
+                // Test if it works
+                if let Ok(output) = Command::new(&path).arg("-version").output() {
+                    if output.status.success() {
+                        eprintln!("   ✓ Custom FFprobe path is valid and working");
+                        return Ok(path);
+                    } else {
+                        eprintln!("   ✗ Custom FFprobe path exists but failed to execute");
+                    }
+                } else {
+                    eprintln!("   ✗ Custom FFprobe path is not executable");
+                }
+            } else {
+                eprintln!("   ✗ Custom FFprobe path does not exist");
+            }
+        }
+    }
+
+    // 2. Auto-detect using settings module
+    eprintln!("2. Auto-detecting FFprobe installation...");
+    let (_, detected_ffprobe) = crate::settings::detect_ffmpeg_paths();
+    if let Some(path) = detected_ffprobe {
+        eprintln!("   ✓ Found FFprobe at: {}", path.display());
+        return Ok(path);
+    } else {
+        eprintln!("   ✗ Auto-detection failed");
+    }
+
+    // 3. Fall back to system PATH
+    eprintln!("3. Falling back to system PATH");
+
+    #[cfg(target_os = "windows")]
+    let ffprobe_cmd = "ffprobe.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffprobe_cmd = "ffprobe";
+
+    if let Ok(output) = Command::new(ffprobe_cmd).arg("-version").output() {
+        if output.status.success() {
+            eprintln!("   ✓ System FFprobe found and working");
+            return Ok(PathBuf::from(ffprobe_cmd));
+        }
+    }
+
+    eprintln!("   ✗ System FFprobe not found or not working");
+    eprintln!("\n⚠ ERROR: Could not find working FFprobe binary!");
+    eprintln!("Please configure FFprobe path in Settings or install it:");
+    eprintln!("  macOS: brew install ffmpeg");
+    eprintln!("  Linux: sudo apt install ffmpeg");
+    eprintln!("  Windows: choco install ffmpeg");
+
+    anyhow::bail!("FFprobe not found. Please install FFmpeg or configure the path in Settings.")
+}
+
+/// Gets or initializes the FFmpeg binary path
+fn get_ffmpeg_path() -> Result<PathBuf> {
+    // Try to get cached path
+    if let Some(path) = FFMPEG_PATH.get() {
+        return Ok(path.clone());
+    }
+
+    // Find and cache the path
+    let path = find_ffmpeg_binary()?;
+    let _ = FFMPEG_PATH.set(path.clone());
+    Ok(path)
+}
+
+/// Gets or initializes the FFprobe binary path
+fn get_ffprobe_path() -> Result<PathBuf> {
+    // Try to get cached path
+    if let Some(path) = FFPROBE_PATH.get() {
+        return Ok(path.clone());
+    }
+
+    // Find and cache the path
+    let path = find_ffprobe_binary()?;
+    let _ = FFPROBE_PATH.set(path.clone());
+    Ok(path)
+}
+
 /// Extracts video metadata using ffprobe
 pub fn get_video_info(video_path: &Path) -> Result<VideoInfo> {
-    let output = Command::new("ffprobe")
+    let ffprobe_path = get_ffprobe_path()?;
+    let output = Command::new(&ffprobe_path)
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -100,11 +259,13 @@ fn detect_hw_accel() -> Vec<String> {
     #[cfg(not(target_os = "macos"))]
     {
         // Check if CUDA is available
-        if Command::new("ffmpeg").args(["-hwaccels"]).output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).contains("cuda"))
-            .unwrap_or(false)
-        {
-            accel_args.extend(vec!["-hwaccel".to_string(), "cuda".to_string()]);
+        if let Ok(ffmpeg_path) = get_ffmpeg_path() {
+            if Command::new(&ffmpeg_path).args(["-hwaccels"]).output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).contains("cuda"))
+                .unwrap_or(false)
+            {
+                accel_args.extend(vec!["-hwaccel".to_string(), "cuda".to_string()]);
+            }
         }
     }
 
@@ -123,7 +284,8 @@ pub fn extract_frame(video_path: &Path, frame_number: usize, output_path: &Path)
     }
 
     // Build command with hardware acceleration
-    let mut cmd = Command::new("ffmpeg");
+    let ffmpeg_path = get_ffmpeg_path()?;
+    let mut cmd = Command::new(&ffmpeg_path);
     let hw_accel = detect_hw_accel();
 
     // Add hardware acceleration args if available
@@ -193,7 +355,8 @@ pub fn extract_frames_to_memory_batch(
         .join("+");
 
     // Build command with hardware acceleration
-    let mut cmd = Command::new("ffmpeg");
+    let ffmpeg_path = get_ffmpeg_path()?;
+    let mut cmd = Command::new(&ffmpeg_path);
     let hw_accel = detect_hw_accel();
 
     // Add hardware acceleration args

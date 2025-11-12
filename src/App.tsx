@@ -37,6 +37,13 @@ import type {
 } from './types';
 
 import './index.css';
+import { SettingsDialog } from './SettingsDialog';
+
+interface AppSettings {
+  ffmpeg_path: string | null;
+  ffprobe_path: string | null;
+  first_run: boolean;
+}
 
 function App() {
   const [videoPath, setVideoPath] = useState<string | null>(null);
@@ -52,6 +59,7 @@ function App() {
   const [useGpu, setUseGpu] = useState<boolean>(true);
   const [exporting, setExporting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [isFirstRun, setIsFirstRun] = useState(false);
 
   // Frame selection state
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('threshold');
@@ -79,6 +87,23 @@ function App() {
   const [endTimeInput, setEndTimeInput] = useState<string>('0');
 
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Check for first run on mount
+  useEffect(() => {
+    const checkFirstRun = async () => {
+      try {
+        const settings = await invoke<AppSettings>('get_settings');
+        if (settings.first_run) {
+          setIsFirstRun(true);
+          setShowSettings(true);
+        }
+      } catch (error) {
+        console.error('Failed to check first run:', error);
+      }
+    };
+
+    checkFirstRun();
+  }, []);
 
   useEffect(() => {
     const setupListeners = async () => {
@@ -735,6 +760,14 @@ function App() {
               <FileVideo size={40} />
               Sharp Frame Extractor
             </h1>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="btn-secondary flex items-center gap-2"
+              title="Settings"
+            >
+              <Settings size={20} />
+              Settings
+            </button>
             {(videoPath || analysisResult) && (
               <button
                 onClick={handleReset}
@@ -1194,6 +1227,16 @@ function App() {
 
       {/* Frame Preview Modal */}
       {renderFramePreviewModal()}
+
+      {/* Settings Dialog */}
+      <SettingsDialog
+        isOpen={showSettings}
+        onClose={() => {
+          setShowSettings(false);
+          setIsFirstRun(false);
+        }}
+        isFirstRun={isFirstRun}
+      />
     </div>
   );
 }
