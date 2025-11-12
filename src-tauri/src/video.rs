@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
 use std::sync::OnceLock;
-use ffmpeg_sidecar;
+use crate::settings::AppSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -28,230 +28,156 @@ pub struct FrameData {
 static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static FFPROBE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Ensures FFmpeg binaries are downloaded and available
-fn ensure_ffmpeg_available() -> Result<()> {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        eprintln!("=== FFmpeg Setup ===");
-        eprintln!("Attempting to download FFmpeg binaries...");
-
-        // Try to auto-download FFmpeg binaries on first call
-        match ffmpeg_sidecar::download::auto_download() {
-            Ok(_) => {
-                eprintln!("✓ FFmpeg binaries downloaded successfully");
-                // Verify the download worked
-                if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
-                    eprintln!("  Sidecar directory: {}", sidecar.display());
-
-                    #[cfg(target_os = "windows")]
-                    let files = vec!["ffmpeg.exe", "ffprobe.exe"];
-                    #[cfg(not(target_os = "windows"))]
-                    let files = vec!["ffmpeg", "ffprobe"];
-
-                    for file in files {
-                        let path = sidecar.join(file);
-                        if path.exists() {
-                            eprintln!("  ✓ Found: {}", path.display());
-                        } else {
-                            eprintln!("  ✗ Missing: {}", path.display());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("⚠ Warning: Failed to auto-download FFmpeg: {}", e);
-                eprintln!("  Will attempt to use system FFmpeg from PATH");
-                eprintln!("  You can install FFmpeg with:");
-                eprintln!("    macOS: brew install ffmpeg");
-                eprintln!("    Linux: sudo apt install ffmpeg");
-                eprintln!("    Windows: choco install ffmpeg");
-            }
-        }
-    });
-
-    Ok(())
-}
-
 /// Finds the FFmpeg binary path
 fn find_ffmpeg_binary() -> Result<PathBuf> {
     eprintln!("\n=== Looking for FFmpeg ===");
 
-    // First, try to ensure FFmpeg is downloaded
-    ensure_ffmpeg_available()?;
+    // 1. Check user settings first
+    if let Ok(settings) = AppSettings::load() {
+        if let Some(custom_path) = settings.ffmpeg_path {
+            let path = PathBuf::from(&custom_path);
+            eprintln!("1. Checking custom path from settings: {}", path.display());
 
-    #[cfg(target_os = "windows")]
-    let ffmpeg_name = "ffmpeg.exe";
-    #[cfg(not(target_os = "windows"))]
-    let ffmpeg_name = "ffmpeg";
-
-    // Try ffmpeg-sidecar directory first
-    if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
-        let ffmpeg_path = sidecar.join(ffmpeg_name);
-        eprintln!("1. Checking sidecar directory: {}", ffmpeg_path.display());
-        if ffmpeg_path.exists() {
-            eprintln!("   ✓ Found FFmpeg at: {}", ffmpeg_path.display());
-
-            // Test if it actually works
-            if let Ok(output) = Command::new(&ffmpeg_path).arg("-version").output() {
-                if output.status.success() {
-                    eprintln!("   ✓ FFmpeg is executable and working");
-                    return Ok(ffmpeg_path);
+            if path.exists() {
+                // Test if it works
+                if let Ok(output) = Command::new(&path).arg("-version").output() {
+                    if output.status.success() {
+                        eprintln!("   ✓ Custom FFmpeg path is valid and working");
+                        return Ok(path);
+                    } else {
+                        eprintln!("   ✗ Custom FFmpeg path exists but failed to execute");
+                    }
                 } else {
-                    eprintln!("   ✗ FFmpeg exists but failed to execute");
+                    eprintln!("   ✗ Custom FFmpeg path is not executable");
                 }
             } else {
-                eprintln!("   ✗ FFmpeg exists but is not executable");
+                eprintln!("   ✗ Custom FFmpeg path does not exist");
             }
-        } else {
-            eprintln!("   ✗ Not found at sidecar location");
         }
     }
 
-    // Try checking next to the executable (for bundled binaries)
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            eprintln!("2. Checking near executable: {}", exe_dir.display());
-
-            // Check various possible locations
-            let possible_paths = vec![
-                exe_dir.join(ffmpeg_name),
-                exe_dir.join("../Resources").join(ffmpeg_name),
-                exe_dir.join("bin").join(ffmpeg_name),
-            ];
-
-            for path in possible_paths {
-                eprintln!("   Checking: {}", path.display());
-                if path.exists() {
-                    eprintln!("   ✓ Found FFmpeg at: {}", path.display());
-                    return Ok(path);
-                }
-            }
-            eprintln!("   ✗ Not found near executable");
-        }
+    // 2. Auto-detect using settings module
+    eprintln!("2. Auto-detecting FFmpeg installation...");
+    let (detected_ffmpeg, _) = crate::settings::detect_ffmpeg_paths();
+    if let Some(path) = detected_ffmpeg {
+        eprintln!("   ✓ Found FFmpeg at: {}", path.display());
+        return Ok(path);
+    } else {
+        eprintln!("   ✗ Auto-detection failed");
     }
 
-    // Fall back to system PATH
+    // 3. Fall back to system PATH
     eprintln!("3. Falling back to system PATH");
-    eprintln!("   Trying to use 'ffmpeg' from PATH...");
 
-    // Test if system FFmpeg works
-    if let Ok(output) = Command::new("ffmpeg").arg("-version").output() {
+    #[cfg(target_os = "windows")]
+    let ffmpeg_cmd = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_cmd = "ffmpeg";
+
+    if let Ok(output) = Command::new(ffmpeg_cmd).arg("-version").output() {
         if output.status.success() {
             eprintln!("   ✓ System FFmpeg found and working");
-            return Ok(PathBuf::from("ffmpeg"));
+            return Ok(PathBuf::from(ffmpeg_cmd));
         }
     }
 
     eprintln!("   ✗ System FFmpeg not found or not working");
     eprintln!("\n⚠ ERROR: Could not find working FFmpeg binary!");
-    eprintln!("Please install FFmpeg manually:");
+    eprintln!("Please configure FFmpeg path in Settings or install it:");
     eprintln!("  macOS: brew install ffmpeg");
     eprintln!("  Linux: sudo apt install ffmpeg");
     eprintln!("  Windows: choco install ffmpeg");
 
-    // Return the PATH version as last resort, will fail with better error
-    Ok(PathBuf::from("ffmpeg"))
+    anyhow::bail!("FFmpeg not found. Please install FFmpeg or configure the path in Settings.")
 }
 
 /// Finds the FFprobe binary path
 fn find_ffprobe_binary() -> Result<PathBuf> {
     eprintln!("\n=== Looking for FFprobe ===");
 
-    // First, try to ensure FFmpeg is downloaded
-    ensure_ffmpeg_available()?;
+    // 1. Check user settings first
+    if let Ok(settings) = AppSettings::load() {
+        if let Some(custom_path) = settings.ffprobe_path {
+            let path = PathBuf::from(&custom_path);
+            eprintln!("1. Checking custom path from settings: {}", path.display());
 
-    #[cfg(target_os = "windows")]
-    let ffprobe_name = "ffprobe.exe";
-    #[cfg(not(target_os = "windows"))]
-    let ffprobe_name = "ffprobe";
-
-    // Try ffmpeg-sidecar directory first
-    if let Ok(sidecar) = ffmpeg_sidecar::paths::sidecar_dir() {
-        let ffprobe_path = sidecar.join(ffprobe_name);
-        eprintln!("1. Checking sidecar directory: {}", ffprobe_path.display());
-        if ffprobe_path.exists() {
-            eprintln!("   ✓ Found FFprobe at: {}", ffprobe_path.display());
-
-            // Test if it actually works
-            if let Ok(output) = Command::new(&ffprobe_path).arg("-version").output() {
-                if output.status.success() {
-                    eprintln!("   ✓ FFprobe is executable and working");
-                    return Ok(ffprobe_path);
+            if path.exists() {
+                // Test if it works
+                if let Ok(output) = Command::new(&path).arg("-version").output() {
+                    if output.status.success() {
+                        eprintln!("   ✓ Custom FFprobe path is valid and working");
+                        return Ok(path);
+                    } else {
+                        eprintln!("   ✗ Custom FFprobe path exists but failed to execute");
+                    }
                 } else {
-                    eprintln!("   ✗ FFprobe exists but failed to execute");
+                    eprintln!("   ✗ Custom FFprobe path is not executable");
                 }
             } else {
-                eprintln!("   ✗ FFprobe exists but is not executable");
+                eprintln!("   ✗ Custom FFprobe path does not exist");
             }
-        } else {
-            eprintln!("   ✗ Not found at sidecar location");
         }
     }
 
-    // Try checking next to the executable (for bundled binaries)
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            eprintln!("2. Checking near executable: {}", exe_dir.display());
-
-            // Check various possible locations
-            let possible_paths = vec![
-                exe_dir.join(ffprobe_name),
-                exe_dir.join("../Resources").join(ffprobe_name),
-                exe_dir.join("bin").join(ffprobe_name),
-            ];
-
-            for path in possible_paths {
-                eprintln!("   Checking: {}", path.display());
-                if path.exists() {
-                    eprintln!("   ✓ Found FFprobe at: {}", path.display());
-                    return Ok(path);
-                }
-            }
-            eprintln!("   ✗ Not found near executable");
-        }
+    // 2. Auto-detect using settings module
+    eprintln!("2. Auto-detecting FFprobe installation...");
+    let (_, detected_ffprobe) = crate::settings::detect_ffmpeg_paths();
+    if let Some(path) = detected_ffprobe {
+        eprintln!("   ✓ Found FFprobe at: {}", path.display());
+        return Ok(path);
+    } else {
+        eprintln!("   ✗ Auto-detection failed");
     }
 
-    // Fall back to system PATH
+    // 3. Fall back to system PATH
     eprintln!("3. Falling back to system PATH");
-    eprintln!("   Trying to use 'ffprobe' from PATH...");
 
-    // Test if system FFprobe works
-    if let Ok(output) = Command::new("ffprobe").arg("-version").output() {
+    #[cfg(target_os = "windows")]
+    let ffprobe_cmd = "ffprobe.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffprobe_cmd = "ffprobe";
+
+    if let Ok(output) = Command::new(ffprobe_cmd).arg("-version").output() {
         if output.status.success() {
             eprintln!("   ✓ System FFprobe found and working");
-            return Ok(PathBuf::from("ffprobe"));
+            return Ok(PathBuf::from(ffprobe_cmd));
         }
     }
 
     eprintln!("   ✗ System FFprobe not found or not working");
     eprintln!("\n⚠ ERROR: Could not find working FFprobe binary!");
-    eprintln!("Please install FFmpeg manually:");
+    eprintln!("Please configure FFprobe path in Settings or install it:");
     eprintln!("  macOS: brew install ffmpeg");
     eprintln!("  Linux: sudo apt install ffmpeg");
     eprintln!("  Windows: choco install ffmpeg");
 
-    // Return the PATH version as last resort, will fail with better error
-    Ok(PathBuf::from("ffprobe"))
+    anyhow::bail!("FFprobe not found. Please install FFmpeg or configure the path in Settings.")
 }
 
 /// Gets or initializes the FFmpeg binary path
 fn get_ffmpeg_path() -> Result<PathBuf> {
-    Ok(FFMPEG_PATH
-        .get_or_init(|| {
-            find_ffmpeg_binary().unwrap_or_else(|_| PathBuf::from("ffmpeg"))
-        })
-        .clone())
+    // Try to get cached path
+    if let Some(path) = FFMPEG_PATH.get() {
+        return Ok(path.clone());
+    }
+
+    // Find and cache the path
+    let path = find_ffmpeg_binary()?;
+    let _ = FFMPEG_PATH.set(path.clone());
+    Ok(path)
 }
 
 /// Gets or initializes the FFprobe binary path
 fn get_ffprobe_path() -> Result<PathBuf> {
-    Ok(FFPROBE_PATH
-        .get_or_init(|| {
-            find_ffprobe_binary().unwrap_or_else(|_| PathBuf::from("ffprobe"))
-        })
-        .clone())
+    // Try to get cached path
+    if let Some(path) = FFPROBE_PATH.get() {
+        return Ok(path.clone());
+    }
+
+    // Find and cache the path
+    let path = find_ffprobe_binary()?;
+    let _ = FFPROBE_PATH.set(path.clone());
+    Ok(path)
 }
 
 /// Extracts video metadata using ffprobe

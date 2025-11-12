@@ -34,4 +34,5 @@ wgpu = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.3"
 ffmpeg-sidecar = "2.0"
+dirs = "5.0"
 

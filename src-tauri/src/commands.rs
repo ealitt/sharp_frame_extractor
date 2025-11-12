@@ -256,6 +256,43 @@ pub async fn get_frame_preview(
     Ok(format!("data:image/jpeg;base64,{}", base64_str))
 }
 
+/// Settings management commands
+use crate::settings::{AppSettings, detect_ffmpeg_paths, get_install_instructions};
+
+#[tauri::command]
+pub async fn get_settings() -> Result<AppSettings, String> {
+    AppSettings::load().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_settings(settings: AppSettings) -> Result<(), String> {
+    settings.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn detect_ffmpeg() -> Result<(Option<String>, Option<String>), String> {
+    let (ffmpeg, ffprobe) = detect_ffmpeg_paths();
+    Ok((
+        ffmpeg.map(|p| p.to_string_lossy().to_string()),
+        ffprobe.map(|p| p.to_string_lossy().to_string()),
+    ))
+}
+
+#[tauri::command]
+pub async fn get_ffmpeg_install_instructions() -> Result<Vec<String>, String> {
+    Ok(get_install_instructions())
+}
+
+#[tauri::command]
+pub async fn validate_ffmpeg_path(path: String) -> Result<bool, String> {
+    use std::process::Command;
+
+    match Command::new(&path).arg("-version").output() {
+        Ok(output) => Ok(output.status.success()),
+        Err(_) => Ok(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
