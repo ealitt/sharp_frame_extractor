@@ -4,6 +4,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., v0.2.1)'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -13,18 +18,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest' # for Arm based macs (M1 and above).
+          - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest' # for Intel based macs.
+            target: 'aarch64-apple-darwin'
+            platform_name: 'macOS-AppleSilicon'
+          - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04' # for Tauri v2 you should use ubuntu-22.04
+            target: 'x86_64-apple-darwin'
+            platform_name: 'macOS-Intel'
+          - platform: 'ubuntu-22.04'
             args: ''
+            target: 'x86_64-unknown-linux-gnu'
+            platform_name: 'Linux'
           - platform: 'windows-latest'
             args: ''
+            target: 'x86_64-pc-windows-msvc'
+            platform_name: 'Windows'
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -35,16 +50,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
-          # Add platform to cache key to avoid conflicts
           key: ${{ matrix.platform }}-${{ matrix.args }}
-          # Save cache only on main branch to reduce conflicts
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies (ubuntu only)
@@ -58,12 +70,103 @@ jobs:
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
+        id: tauri-build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }} # This only works if your workflow triggers on new tags.
-          releaseName: 'Sharp Frame Extractor v__VERSION__' # tauri-action replaces \_\_VERSION\_\_ with the app version.
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'Sharp Frame Extractor v__VERSION__'
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Rename artifacts to human-readable names
+        shell: bash
+        run: |
+          VERSION="${{ inputs.tag || github.ref_name }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          PLATFORM="${{ matrix.platform_name }}"
+
+          echo "Renaming files for $PLATFORM (version $VERSION)"
+
+          # Find the release artifacts directory
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+            # Rename DMG files
+            if [ -d "$BUNDLE_DIR/dmg" ]; then
+              for file in "$BUNDLE_DIR/dmg"/*.dmg; do
+                if [ -f "$file" ]; then
+                  NEW_NAME="Sharp-Frame-Extractor-${VERSION}-${PLATFORM}.dmg"
+                  echo "Renaming: $(basename "$file") -> $NEW_NAME"
+                  mv "$file" "$BUNDLE_DIR/dmg/$NEW_NAME" || true
+                fi
+              done
+            fi
+
+          elif [ "$RUNNER_OS" == "Linux" ]; then
+            BUNDLE_DIR="src-tauri/target/release/bundle"
+
+            # Rename DEB files
+            if [ -d "$BUNDLE_DIR/deb" ]; then
+              for file in "$BUNDLE_DIR/deb"/*.deb; do
+                if [ -f "$file" ]; then
+                  NEW_NAME="Sharp-Frame-Extractor-${VERSION}-${PLATFORM}.deb"
+                  echo "Renaming: $(basename "$file") -> $NEW_NAME"
+                  mv "$file" "$BUNDLE_DIR/deb/$NEW_NAME" || true
+                fi
+              done
+            fi
+
+            # Rename AppImage files
+            if [ -d "$BUNDLE_DIR/appimage" ]; then
+              for file in "$BUNDLE_DIR/appimage"/*.AppImage; do
+                if [ -f "$file" ]; then
+                  NEW_NAME="Sharp-Frame-Extractor-${VERSION}-${PLATFORM}.AppImage"
+                  echo "Renaming: $(basename "$file") -> $NEW_NAME"
+                  mv "$file" "$BUNDLE_DIR/appimage/$NEW_NAME" || true
+                fi
+              done
+            fi
+
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            BUNDLE_DIR="src-tauri/target/release/bundle"
+
+            # Rename EXE installer
+            if [ -d "$BUNDLE_DIR/nsis" ]; then
+              for file in "$BUNDLE_DIR/nsis"/*.exe; do
+                if [ -f "$file" ]; then
+                  NEW_NAME="Sharp-Frame-Extractor-${VERSION}-${PLATFORM}-Installer.exe"
+                  echo "Renaming: $(basename "$file") -> $NEW_NAME"
+                  mv "$file" "$BUNDLE_DIR/nsis/$NEW_NAME" || true
+                fi
+              done
+            fi
+
+            # Rename MSI installer
+            if [ -d "$BUNDLE_DIR/msi" ]; then
+              for file in "$BUNDLE_DIR/msi"/*.msi; do
+                if [ -f "$file" ]; then
+                  NEW_NAME="Sharp-Frame-Extractor-${VERSION}-${PLATFORM}.msi"
+                  echo "Renaming: $(basename "$file") -> $NEW_NAME"
+                  mv "$file" "$BUNDLE_DIR/msi/$NEW_NAME" || true
+                fi
+              done
+            fi
+          fi
+
+          echo "File renaming complete"
+
+      - name: Upload renamed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform_name }}-artifacts
+          path: |
+            src-tauri/target/*/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: ignore
+
