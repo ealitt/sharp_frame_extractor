@@ -42,6 +42,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          # Add platform to cache key to avoid conflicts
+          key: ${{ matrix.platform }}-${{ matrix.args }}
+          # Save cache only on main branch to reduce conflicts
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
