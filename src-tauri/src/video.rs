@@ -365,13 +365,14 @@ pub fn extract_frames_to_memory_batch(
     }
 
     // Extract all frames in one go using select filter
+    let output_pattern = temp_output_dir.join("frame_%06d.jpg");
     cmd.args([
         "-i", video_path.to_str().unwrap(),
         "-vf", &format!("select='{}'", select_expr),
         "-vsync", "0",
         "-q:v", "2",
         "-f", "image2",
-        &format!("{}/frame_%06d.jpg", temp_output_dir.display()),
+        output_pattern.to_str().unwrap(),
     ]);
 
     let output = cmd.output()

@@ -377,9 +377,14 @@ function App() {
 
       // Create subfolder with timestamp
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-      const videoName = videoPath.split('/').pop()?.replace(/\.[^/.]+$/, '') || 'video';
+      // Handle both Windows (\) and Unix (/) path separators
+      const videoName = videoPath.split(/[/\\]/).pop()?.replace(/\.[^/.]+$/, '') || 'video';
       const folderName = `${videoName}_frames_${timestamp}`;
-      const outputDir = `${baseDir}/${folderName}`;
+
+      // Let the backend handle path construction to avoid Windows path issues
+      // For now, pass the folder name separately and construct path in backend
+      const pathSeparator = baseDir.includes('\\') ? '\\' : '/';
+      const outputDir = `${baseDir}${pathSeparator}${folderName}`;
 
       // Get selected frame indices
       const selectedIndices = getSelectedFrameIndices();
